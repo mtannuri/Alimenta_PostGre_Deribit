@@ -13,13 +13,17 @@ load_dotenv()
 
 # Conexão ao banco
 def conectar_postgres():
-    conn = psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
-        dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
-        password=os.getenv("DB_PASSWORD")
-    )
+    db_url = os.getenv("DB_URL")
+    if db_url:
+        return psycopg2.connect(db_url)
+    else:
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT"),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD")
+        )
     return conn
 
 # Criação da tabela se não existir
