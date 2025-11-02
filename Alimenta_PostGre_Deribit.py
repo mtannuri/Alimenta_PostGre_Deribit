@@ -107,7 +107,20 @@ def atualizar_deribit():
             conn.close()
 
 
+
 DERIBIT_API_URL = "https://www.deribit.com/api/v2"
+
+def get_result_safe(response, descricao=""):
+    try:
+        data = response.json()
+        if "result" in data:
+            return data["result"]
+        else:
+            print(f"⚠️ Erro na resposta da API {descricao}: {data.get('error', 'Resposta inesperada')}")
+            return None
+    except Exception as e:
+        print(f"⚠️ Erro ao processar resposta da API {descricao}: {e}")
+        return None
 
 def coletar_dados_deribit():
     ativos = ["BTC", "ETH", "SOL"]
@@ -117,37 +130,44 @@ def coletar_dados_deribit():
     for ativo in ativos:
         # 1. Book summary (Mark Price, Volume, Open Interest)
         r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo}&kind=future")
-        book_data = r_book.json()["result"][0]
+        book_data = get_result_safe(r_book, f"book_summary {ativo}")
+        if not book_data:
+            continue
+        book_data = book_data[0]
 
-        mark_price = book_data["mark_price"]
-        volume_24h = book_data["volume"]
-        open_interest = book_data["open_interest"]
+        mark_price = book_data.get("mark_price")
+        volume_24h = book_data.get("volume")
+        open_interest = book_data.get("open_interest")
 
         # 2. Index Price
         r_index = requests.get(f"{DERIBIT_API_URL}/public/get_index_price?index_name={ativo}_usd")
-        index_price = r_index.json()["result"]["index_price"]
+        index_data = get_result_safe(r_index, f"index_price {ativo}")
+        index_price = index_data.get("index_price") if index_data else None
 
         # 3. Funding Rate
         r_funding = requests.get(f"{DERIBIT_API_URL}/public/get_funding_rate?instrument_name={ativo}-PERPETUAL")
-        funding_rate = r_funding.json()["result"]["interest_8h"]
+        funding_data = get_result_safe(r_funding, f"funding_rate {ativo}")
+        funding_rate = funding_data.get("interest_8h") if funding_data else None
 
         # 4. Premium Rate
-        premium_rate = (mark_price - index_price) / index_price
+        premium_rate = (mark_price - index_price) / index_price if mark_price and index_price else None
 
         # 5. DVOL (apenas BTC e ETH)
         dvol = None
         if ativo in ["BTC", "ETH"]:
             r_dvol = requests.get(f"{DERIBIT_API_URL}/public/get_volatility_index_data?currency={ativo}")
-            dvol = r_dvol.json()["result"]["volatility"]
+            dvol_data = get_result_safe(r_dvol, f"dvol {ativo}")
+            dvol = dvol_data.get("volatility") if dvol_data else None
 
         # 6. Candlestick (vela)
         r_candle = requests.get(
             f"{DERIBIT_API_URL}/public/get_tradingview_chart_data?instrument_name={ativo}-PERPETUAL"
             f"&start_timestamp={timestamp - 900000}&end_timestamp={timestamp}&resolution=15"
         )
-        candles = r_candle.json()["result"]["ticks"]
-        if candles:
-            ultima_vela = candles[-1]
+        candle_data = get_result_safe(r_candle, f"candlestick {ativo}")
+        ticks = candle_data.get("ticks") if candle_data else []
+        if ticks:
+            ultima_vela = ticks[-1]
             open_, high, low, close = ultima_vela["open"], ultima_vela["high"], ultima_vela["low"], ultima_vela["close"]
             upper_wick = high - max(open_, close)
             lower_wick = min(open_, close) - low
@@ -168,7 +188,6 @@ def coletar_dados_deribit():
         }
 
     return dados
-
 
 def atualizar_deribit():
     conn = None
