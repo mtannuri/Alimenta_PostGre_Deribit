@@ -102,9 +102,9 @@ def atualizar_deribit():
         # Aqui virá a lógica de coleta da API e inserção
     except Exception as e:
         print(f"Erro na atualização: {e}")
-    finally:
-        if conn is not None:
-            conn.close()
+finally:
+    if conn is not None:
+        conn.close()
 
 
 DERIBIT_API_URL = "https://www.deribit.com/api/v2"
