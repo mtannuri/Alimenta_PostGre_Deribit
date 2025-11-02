@@ -189,6 +189,9 @@ def coletar_dados_deribit():
 
     return dados
 
+import pandas as pd
+from datetime import datetime
+
 def atualizar_deribit():
     conn = None
     try:
@@ -202,11 +205,11 @@ def atualizar_deribit():
         # Busca dados anteriores para cálculo de métricas derivadas
         df_antigos = pd.read_sql("SELECT * FROM tb_deribit_info_ini ORDER BY timestamp DESC LIMIT 100", conn)
 
-        # Cálculo de métricas derivadas
+        # Funções auxiliares
         def calcular_delta_vol(ativo):
-            vol_atual = dados_api[ativo]["volume_24h"]
+            vol_atual = dados_api[ativo].get("volume_24h")
             vol_anterior = df_antigos[f"v24h_{ativo}"].iloc[0] if not df_antigos.empty else None
-            return vol_atual - vol_anterior if vol_anterior is not None else None
+            return vol_atual - vol_anterior if vol_atual and vol_anterior else None
 
         def calcular_ma(serie, n):
             return serie.head(n).mean() if len(serie) >= n else None
@@ -225,16 +228,21 @@ def atualizar_deribit():
         }
 
         for ativo in ["BTC", "ETH", "SOL"]:
-            linha[f"{ativo}_Mark"] = dados_api[ativo]["mark"]
-            linha[f"{ativo}_Index"] = dados_api[ativo]["index"]
-            linha[f"funding_{ativo}"] = dados_api[ativo]["funding"]
-            linha[f"open_interest_{ativo}"] = dados_api[ativo]["open_interest"]
-            linha[f"funding_{ativo}_PremiumRate"] = dados_api[ativo]["premium_rate"]
-            linha[f"v24h_{ativo}"] = dados_api[ativo]["volume_24h"]
+            if ativo not in dados_api:
+                print(f"⚠️ Dados ausentes para {ativo}, pulando...")
+                continue
+
+            dados = dados_api[ativo]
+            linha[f"{ativo}_Mark"] = dados.get("mark")
+            linha[f"{ativo}_Index"] = dados.get("index")
+            linha[f"funding_{ativo}"] = dados.get("funding")
+            linha[f"open_interest_{ativo}"] = dados.get("open_interest")
+            linha[f"funding_{ativo}_PremiumRate"] = dados.get("premium_rate")
+            linha[f"v24h_{ativo}"] = dados.get("volume_24h")
             linha[f"DeltaVol_24h_{ativo}"] = calcular_delta_vol(ativo)
-            linha[f"Upper_Wick_{ativo}"] = dados_api[ativo]["upper_wick"]
-            linha[f"Lower_Wick_{ativo}"] = dados_api[ativo]["lower_wick"]
-            linha[f"DVOL_{ativo}"] = dados_api[ativo]["dvol"] if ativo in ["BTC", "ETH"] else None
+            linha[f"Upper_Wick_{ativo}"] = dados.get("upper_wick")
+            linha[f"Lower_Wick_{ativo}"] = dados.get("lower_wick")
+            linha[f"DVOL_{ativo}"] = dados.get("dvol") if ativo in ["BTC", "ETH"] else None
 
             # Cálculos com pandas
             if not df_antigos.empty:
@@ -243,7 +251,7 @@ def atualizar_deribit():
                 linha[f"Zscore_DeltaVol_24h_{ativo}"] = calcular_zscore(linha[f"DeltaVol_24h_{ativo}"], serie_delta_vol, 12)
 
                 serie_oi = df_antigos[f"open_interest_{ativo}"]
-                linha[f"Delta_open_interes_{ativo}"] = linha[f"open_interest_{ativo}"] - serie_oi.iloc[0]
+                linha[f"Delta_open_interes_{ativo}"] = linha[f"open_interest_{ativo}"] - serie_oi.iloc[0] if linha[f"open_interest_{ativo}"] else None
                 linha[f"MA_OI_{ativo}_12"] = calcular_ma(serie_oi, 12)
                 linha[f"MA_OI_{ativo}_48"] = calcular_ma(serie_oi, 48)
                 linha[f"STD_OI_{ativo}_12"] = calcular_std(serie_oi, 12)
