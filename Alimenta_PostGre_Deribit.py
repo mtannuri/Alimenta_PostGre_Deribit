@@ -3,6 +3,8 @@ import psycopg2
 import requests
 import time
 import pandas as pd
+import numpy as np
+
 
 from psycopg2 import sql
 from dotenv import load_dotenv
@@ -163,13 +165,16 @@ def coletar_dados_deribit():
         if ativo in ["btc", "eth"]:
             start_ts = timestamp - (15 * 60 * 1000)  # 15 minutos atrás em ms (ajuste se quiser)
             end_ts = timestamp
+            resolution = 60  # ajuste para 1, 5, 15, 60 conforme desejar
             r_dvol = requests.get(
-                f"{DERIBIT_API_URL}/public/get_volatility_index_data?currency={ativo}"
-                f"&start_timestamp={start_ts}&end_timestamp={end_ts}"
-            )
+                f"{DERIBIT_API_URL}/public/get_volatility_index_data"
+                f"?currency={ativo}&start_timestamp={start_ts}&end_timestamp={end_ts}&resolution={resolution}")
             dvol_result = get_result_safe(r_dvol, f"dvol {ativo}")
+            dvol = None
             if isinstance(dvol_result, dict):
                 dvol = dvol_result.get("volatility") or dvol_result.get("value")
+
+    
 
         # 5) Candlestick (vela) - instrument_name com ticker em MAIÚSCULAS para PERPETUAL
         start_ts_candle = timestamp - (15 * 60 * 1000)
@@ -206,6 +211,29 @@ def coletar_dados_deribit():
     
 
 from datetime import datetime
+
+
+
+
+
+def normalize_value(v):
+    if v is None:
+        return None
+    if isinstance(v, (np.generic,)):
+        return v.item()
+    if isinstance(v, (np.ndarray,)):
+        return v.tolist()
+    if isinstance(v, pd.Timestamp):
+        return v.to_pydatetime()
+    if isinstance(v, pd.Series):
+        return v.tolist()
+    if isinstance(v, (int, float, str, bool)):
+        return v
+    try:
+        return float(v)
+    except Exception:
+        return str(v)
+
 
 
 def atualizar_deribit():
@@ -310,11 +338,22 @@ def atualizar_deribit():
             return
 
         # Monta comando de inserção com as colunas presentes
-        colunas = ", ".join(linha.keys())
-        valores = ", ".join(["%s"] * len(linha))
+        colunas = list(linha.keys())
+        valores_raw = [linha[c] for c in colunas]
+        valores = [normalize_value(v) for v in valores_raw]
+
+        placeholders = ", ".join(["%s"] * len(colunas))
+        colunas_sql = ", ".join(colunas)
+        # debug opcional: imprime tipos antes do insert
+        # for k, v in zip(colunas, valores):
+        #     print(f"DEBUG -> {k}: type={type(v)}, value={v}")
+
         with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas}) VALUES ({valores})", list(linha.values()))
+            cur.execute(f"INSERT INTO { 'tb_deribit_info_ini' } ({colunas_sql}) VALUES ({placeholders})", valores)
             conn.commit()
+
+
+
 
         print(f"[{timestamp}] Dados inseridos com sucesso.")
 
