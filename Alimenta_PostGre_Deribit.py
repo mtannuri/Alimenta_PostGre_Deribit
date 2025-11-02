@@ -131,7 +131,7 @@ def coletar_dados_deribit():
     for ativo in ativos:
         # 1) Book summary (currency={ativo})
         # Request book summary — sem 'kind=all', use currency em MAIÚSCULAS
-r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo.upper()}")
+        r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo.upper()}")
         book_result = get_result_safe(r_book, f"book_summary {ativo}")
         if not book_result or not isinstance(book_result, list) or len(book_result) == 0:
             print(f"⚠️ book_summary vazio para {ativo}, pulando ativo")
