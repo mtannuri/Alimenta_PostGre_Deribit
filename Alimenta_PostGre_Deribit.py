@@ -130,7 +130,8 @@ def coletar_dados_deribit():
 
     for ativo in ativos:
         # 1) Book summary (currency={ativo})
-        r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo}&kind=all")
+        # Request book summary — sem 'kind=all', use currency em MAIÚSCULAS
+r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo.upper()}")
         book_result = get_result_safe(r_book, f"book_summary {ativo}")
         if not book_result or not isinstance(book_result, list) or len(book_result) == 0:
             print(f"⚠️ book_summary vazio para {ativo}, pulando ativo")
@@ -273,12 +274,20 @@ def atualizar_deribit():
                 linha[f"Zscore_OI_{ativo}_12"] = calcular_zscore(linha[f"open_interest_{ativo}"], serie_oi, 12)
                 linha[f"Zscore_OI_{ativo}_48"] = calcular_zscore(linha[f"open_interest_{ativo}"], serie_oi, 48)
 
-        # Monta comando de inserção
-        colunas = ", ".join(linha.keys())
-        valores = ", ".join(["%s"] * len(linha))
-        with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas}) VALUES ({valores})", list(linha.values()))
-            conn.commit()
+# Depois de montar `linha` (dicionário)....
+# Remover chaves com valor None não é obrigatório, mas ajuda a verificação
+campos_validos = {k: v for k, v in linha.items() if v is not None and k != "timestamp"}
+
+if not campos_validos:
+    print(f"[{timestamp}] Nenhum dado válido coletado — pulando insert.")
+    return  # ou continue, dependendo do fluxo desejado
+
+# Se quiser manter o comportamento de inserir apenas quando há dados:
+colunas = ", ".join(linha.keys())
+valores = ", ".join(["%s"] * len(linha))
+with conn.cursor() as cur:
+    cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas}) VALUES ({valores})", list(linha.values()))
+    conn.commit()
 
         print(f"[{timestamp}] Dados inseridos com sucesso.")
 
