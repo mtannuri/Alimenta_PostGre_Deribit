@@ -86,6 +86,7 @@ def criar_tabela_deribit(conn):
 
 # Função principal chamada pelo main.py
 def atualizar_deribit():
+    conn = None
     try:
         conn = conectar_postgres()
         criar_tabela_deribit(conn)
@@ -94,5 +95,6 @@ def atualizar_deribit():
     except Exception as e:
         print(f"Erro na atualização: {e}")
     finally:
-        if conn:
-            conn.close()
+        if conn is not None:
+        conn.close()
+
