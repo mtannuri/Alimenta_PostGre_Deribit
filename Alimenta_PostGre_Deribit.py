@@ -207,7 +207,11 @@ def coletar_dados_deribit():
 
 from datetime import datetime
 
+
 def atualizar_deribit():
+    import pandas as pd
+    from datetime import datetime
+
     conn = None
     try:
         conn = conectar_postgres()
@@ -217,14 +221,19 @@ def atualizar_deribit():
         dados_api = coletar_dados_deribit()
         timestamp = datetime.now()
 
+        # Se nada foi coletado, pula a atualização
+        if not dados_api:
+            print(f"[{timestamp}] Nenhum ativo coletado da Deribit — pulando insert.")
+            return
+
         # Busca dados anteriores para cálculo de métricas derivadas
         df_antigos = pd.read_sql("SELECT * FROM tb_deribit_info_ini ORDER BY timestamp DESC LIMIT 100", conn)
 
         # Funções auxiliares
         def calcular_delta_vol(ativo):
-            vol_atual = dados_api[ativo].get("volume_24h")
-            vol_anterior = df_antigos[f"v24h_{ativo}"].iloc[0] if not df_antigos.empty else None
-            return vol_atual - vol_anterior if vol_atual and vol_anterior else None
+            vol_atual = dados_api.get(ativo, {}).get("volume_24h")
+            vol_anterior = df_antigos[f"v24h_{ativo}"].iloc[0] if not df_antigos.empty and f"v24h_{ativo}" in df_antigos.columns else None
+            return vol_atual - vol_anterior if isinstance(vol_atual, (int, float)) and isinstance(vol_anterior, (int, float)) else None
 
         def calcular_ma(serie, n):
             return serie.head(n).mean() if len(serie) >= n else None
@@ -235,59 +244,77 @@ def atualizar_deribit():
         def calcular_zscore(valor, serie, n):
             media = calcular_ma(serie, n)
             desvio = calcular_std(serie, n)
-            return (valor - media) / desvio if media and desvio else None
+            return (valor - media) / desvio if isinstance(valor, (int, float)) and media and desvio else None
 
-        # Monta linha para inserção
-        linha = {
-            "timestamp": timestamp
-        }
+        # Monta linha para inserção; adiciona somente chaves com valor não None
+        linha = {"timestamp": timestamp}
 
-        for ativo in ["BTC", "ETH", "SOL"]:
+        for ativo in ["btc", "eth", "sol"]:
             if ativo not in dados_api:
-                print(f"⚠️ Dados ausentes para {ativo}, pulando...")
+                print(f"⚠️ Dados ausentes para {ativo.upper()}, pulando...")
                 continue
 
             dados = dados_api[ativo]
-            linha[f"{ativo}_Mark"] = dados.get("mark")
-            linha[f"{ativo}_Index"] = dados.get("index")
-            linha[f"funding_{ativo}"] = dados.get("funding")
-            linha[f"open_interest_{ativo}"] = dados.get("open_interest")
-            linha[f"funding_{ativo}_PremiumRate"] = dados.get("premium_rate")
-            linha[f"v24h_{ativo}"] = dados.get("volume_24h")
-            linha[f"DeltaVol_24h_{ativo}"] = calcular_delta_vol(ativo)
-            linha[f"Upper_Wick_{ativo}"] = dados.get("upper_wick")
-            linha[f"Lower_Wick_{ativo}"] = dados.get("lower_wick")
-            linha[f"DVOL_{ativo}"] = dados.get("dvol") if ativo in ["BTC", "ETH"] else None
+            # Campos básicos (usar .get para evitar KeyError)
+            mark = dados.get("mark")
+            index = dados.get("index")
+            funding = dados.get("funding")
+            oi = dados.get("open_interest")
+            premium = dados.get("premium_rate")
+            v24h = dados.get("volume_24h")
+            upper_wick = dados.get("upper_wick")
+            lower_wick = dados.get("lower_wick")
+            dvol = dados.get("dvol") if ativo in ["btc", "eth"] else None
 
-            # Cálculos com pandas
+            # Só insere chaves se o valor não for None
+            if mark is not None: linha[f"{ativo.upper()}_Mark"] = mark
+            if index is not None: linha[f"{ativo.upper()}_Index"] = index
+            if funding is not None: linha[f"funding_{ativo.upper()}"] = funding
+            if oi is not None: linha[f"open_interest_{ativo.upper()}"] = oi
+            if premium is not None: linha[f"funding_{ativo.upper()}_PremiumRate"] = premium
+            if v24h is not None: linha[f"v24h_{ativo.upper()}"] = v24h
+            delta_vol = calcular_delta_vol(ativo)
+            if delta_vol is not None: linha[f"DeltaVol_24h_{ativo.upper()}"] = delta_vol
+            if upper_wick is not None: linha[f"Upper_Wick_{ativo.upper()}"] = upper_wick
+            if lower_wick is not None: linha[f"Lower_Wick_{ativo.upper()}"] = lower_wick
+            if dvol is not None: linha[f"DVOL_{ativo.upper()}"] = dvol
+
+            # Cálculos com pandas apenas se df_antigos tem colunas esperadas
             if not df_antigos.empty:
-                serie_delta_vol = df_antigos[f"DeltaVol_24h_{ativo}"]
-                linha[f"MA_DeltaVol_24h_{ativo}"] = calcular_ma(serie_delta_vol, 12)
-                linha[f"Zscore_DeltaVol_24h_{ativo}"] = calcular_zscore(linha[f"DeltaVol_24h_{ativo}"], serie_delta_vol, 12)
+                col_delta = f"DeltaVol_24h_{ativo.upper()}"
+                if col_delta in df_antigos.columns:
+                    serie_delta_vol = df_antigos[col_delta]
+                    ma = calcular_ma(serie_delta_vol, 12)
+                    if ma is not None: linha[f"MA_DeltaVol_24h_{ativo.upper()}"] = ma
+                    z = calcular_zscore(delta_vol, serie_delta_vol, 12) if delta_vol is not None else None
+                    if z is not None: linha[f"Zscore_DeltaVol_24h_{ativo.upper()}"] = z
 
-                serie_oi = df_antigos[f"open_interest_{ativo}"]
-                linha[f"Delta_open_interes_{ativo}"] = linha[f"open_interest_{ativo}"] - serie_oi.iloc[0] if linha[f"open_interest_{ativo}"] else None
-                linha[f"MA_OI_{ativo}_12"] = calcular_ma(serie_oi, 12)
-                linha[f"MA_OI_{ativo}_48"] = calcular_ma(serie_oi, 48)
-                linha[f"STD_OI_{ativo}_12"] = calcular_std(serie_oi, 12)
-                linha[f"STD_OI_{ativo}_48"] = calcular_std(serie_oi, 48)
-                linha[f"Zscore_OI_{ativo}_12"] = calcular_zscore(linha[f"open_interest_{ativo}"], serie_oi, 12)
-                linha[f"Zscore_OI_{ativo}_48"] = calcular_zscore(linha[f"open_interest_{ativo}"], serie_oi, 48)
+                col_oi = f"open_interest_{ativo.upper()}"
+                if col_oi in df_antigos.columns and oi is not None:
+                    serie_oi = df_antigos[col_oi]
+                    linha[f"Delta_open_interes_{ativo.upper()}"] = oi - serie_oi.iloc[0] if isinstance(serie_oi.iloc[0], (int, float)) else None
+                    ma12 = calcular_ma(serie_oi, 12); ma48 = calcular_ma(serie_oi, 48)
+                    if ma12 is not None: linha[f"MA_OI_{ativo.upper()}_12"] = ma12
+                    if ma48 is not None: linha[f"MA_OI_{ativo.upper()}_48"] = ma48
+                    std12 = calcular_std(serie_oi, 12); std48 = calcular_std(serie_oi, 48)
+                    if std12 is not None: linha[f"STD_OI_{ativo.upper()}_12"] = std12
+                    if std48 is not None: linha[f"STD_OI_{ativo.upper()}_48"] = std48
+                    z12 = calcular_zscore(oi, serie_oi, 12); z48 = calcular_zscore(oi, serie_oi, 48)
+                    if z12 is not None: linha[f"Zscore_OI_{ativo.upper()}_12"] = z12
+                    if z48 is not None: linha[f"Zscore_OI_{ativo.upper()}_48"] = z48
 
-# Depois de montar `linha` (dicionário)....
-# Remover chaves com valor None não é obrigatório, mas ajuda a verificação
-campos_validos = {k: v for k, v in linha.items() if v is not None and k != "timestamp"}
+        # Verifica se há campos úteis além do timestamp
+        campos_validos = {k: v for k, v in linha.items() if v is not None and k != "timestamp"}
+        if not campos_validos:
+            print(f"[{timestamp}] Nenhum dado válido coletado — pulando insert.")
+            return
 
-if not campos_validos:
-    print(f"[{timestamp}] Nenhum dado válido coletado — pulando insert.")
-    return  # ou continue, dependendo do fluxo desejado
-
-# Se quiser manter o comportamento de inserir apenas quando há dados:
-colunas = ", ".join(linha.keys())
-valores = ", ".join(["%s"] * len(linha))
-with conn.cursor() as cur:
-    cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas}) VALUES ({valores})", list(linha.values()))
-    conn.commit()
+        # Monta comando de inserção com as colunas presentes
+        colunas = ", ".join(linha.keys())
+        valores = ", ".join(["%s"] * len(linha))
+        with conn.cursor() as cur:
+            cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas}) VALUES ({valores})", list(linha.values()))
+            conn.commit()
 
         print(f"[{timestamp}] Dados inseridos com sucesso.")
 
