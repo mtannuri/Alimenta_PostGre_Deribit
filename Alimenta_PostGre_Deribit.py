@@ -100,7 +100,7 @@ def atualizar_deribit():
         print(f"Erro na atualização: {e}")
     finally:
         if conn is not None:
-        conn.close()
+            conn.close()
 
 
 DERIBIT_API_URL = "https://www.deribit.com/api/v2"
