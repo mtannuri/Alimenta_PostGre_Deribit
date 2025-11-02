@@ -113,68 +113,82 @@ DERIBIT_API_URL = "https://www.deribit.com/api/v2"
 def get_result_safe(response, descricao=""):
     try:
         data = response.json()
-        if "result" in data:
-            return data["result"]
-        else:
-            print(f"⚠️ Erro na resposta da API {descricao}: {data.get('error', 'Resposta inesperada')}")
-            return None
     except Exception as e:
-        print(f"⚠️ Erro ao processar resposta da API {descricao}: {e}")
+        print(f"⚠️ Erro ao decodificar JSON {descricao}: {e}")
         return None
+    if isinstance(data, dict) and "result" in data:
+        return data["result"]
+    print(f"⚠️ Resposta inesperada {descricao}: {data}")
+    return None
 
 def coletar_dados_deribit():
-    ativos = ["BTC", "ETH", "SOL"]
+    import requests, time
+    DERIBIT_API_URL = "https://www.deribit.com/api/v2"
+    ativos = ["btc", "eth", "sol"]
     dados = {}
-    timestamp = int(time.time() * 1000)  # milissegundos
+    timestamp = int(time.time() * 1000)  # ms
 
     for ativo in ativos:
-        # 1. Book summary (Mark Price, Volume, Open Interest)
-        r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo}&kind=future")
-        book_data = get_result_safe(r_book, f"book_summary {ativo}")
-        if not book_data:
+        # 1) Book summary (currency={ativo})
+        r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo}&kind=all")
+        book_result = get_result_safe(r_book, f"book_summary {ativo}")
+        if not book_result or not isinstance(book_result, list) or len(book_result) == 0:
+            print(f"⚠️ book_summary vazio para {ativo}, pulando ativo")
             continue
-        book_data = book_data[0]
+        book_data = book_result[0] if isinstance(book_result, list) else book_result
 
-        mark_price = book_data.get("mark_price")
-        volume_24h = book_data.get("volume")
-        open_interest = book_data.get("open_interest")
+        # Campos básicos (validação)
+        mark_price = book_data.get("mark_price") if isinstance(book_data, dict) else None
+        volume_24h = book_data.get("volume") if isinstance(book_data, dict) else None
+        open_interest = book_data.get("open_interest") if isinstance(book_data, dict) else None
 
-        # 2. Index Price
+        # Funding rate extraído do book_summary quando disponível
+        funding_rate = None
+        if isinstance(book_data, dict):
+            funding_rate = book_data.get("funding_8h") or book_data.get("funding_8h_rate") or book_data.get("funding_rate")
+
+        # 2) Index price (index_name deve ser lowercase)
         r_index = requests.get(f"{DERIBIT_API_URL}/public/get_index_price?index_name={ativo}_usd")
-        index_data = get_result_safe(r_index, f"index_price {ativo}")
-        index_price = index_data.get("index_price") if index_data else None
+        index_result = get_result_safe(r_index, f"index_price {ativo}")
+        index_price = index_result.get("index_price") if isinstance(index_result, dict) else None
 
-        # 3. Funding Rate
-        r_funding = requests.get(f"{DERIBIT_API_URL}/public/get_funding_rate?instrument_name={ativo}-PERPETUAL")
-        funding_data = get_result_safe(r_funding, f"funding_rate {ativo}")
-        funding_rate = funding_data.get("interest_8h") if funding_data else None
+        # 3) Premium rate (seguro)
+        premium_rate = None
+        if isinstance(mark_price, (int, float)) and isinstance(index_price, (int, float)) and index_price != 0:
+            premium_rate = (mark_price - index_price) / index_price
 
-        # 4. Premium Rate
-        premium_rate = (mark_price - index_price) / index_price if mark_price and index_price else None
-
-        # 5. DVOL (apenas BTC e ETH)
+        # 4) DVOL (apenas btc e eth) - exige start_timestamp e end_timestamp
         dvol = None
-        if ativo in ["BTC", "ETH"]:
-            r_dvol = requests.get(f"{DERIBIT_API_URL}/public/get_volatility_index_data?currency={ativo}")
-            dvol_data = get_result_safe(r_dvol, f"dvol {ativo}")
-            dvol = dvol_data.get("volatility") if dvol_data else None
+        if ativo in ["btc", "eth"]:
+            start_ts = timestamp - (15 * 60 * 1000)  # 15 minutos atrás em ms (ajuste se quiser)
+            end_ts = timestamp
+            r_dvol = requests.get(
+                f"{DERIBIT_API_URL}/public/get_volatility_index_data?currency={ativo}"
+                f"&start_timestamp={start_ts}&end_timestamp={end_ts}"
+            )
+            dvol_result = get_result_safe(r_dvol, f"dvol {ativo}")
+            if isinstance(dvol_result, dict):
+                dvol = dvol_result.get("volatility") or dvol_result.get("value")
 
-        # 6. Candlestick (vela)
+        # 5) Candlestick (vela) - instrument_name com ticker em MAIÚSCULAS para PERPETUAL
+        start_ts_candle = timestamp - (15 * 60 * 1000)
         r_candle = requests.get(
-            f"{DERIBIT_API_URL}/public/get_tradingview_chart_data?instrument_name={ativo}-PERPETUAL"
-            f"&start_timestamp={timestamp - 900000}&end_timestamp={timestamp}&resolution=15"
+            f"{DERIBIT_API_URL}/public/get_tradingview_chart_data?instrument_name={ativo.upper()}-PERPETUAL"
+            f"&start_timestamp={start_ts_candle}&end_timestamp={timestamp}&resolution=15"
         )
-        candle_data = get_result_safe(r_candle, f"candlestick {ativo}")
-        ticks = candle_data.get("ticks") if candle_data else []
-        if ticks:
-            ultima_vela = ticks[-1]
-            open_, high, low, close = ultima_vela["open"], ultima_vela["high"], ultima_vela["low"], ultima_vela["close"]
-            upper_wick = high - max(open_, close)
-            lower_wick = min(open_, close) - low
-        else:
-            upper_wick = lower_wick = None
+        candle_result = get_result_safe(r_candle, f"candlestick {ativo}")
+        upper_wick = lower_wick = None
+        if isinstance(candle_result, dict):
+            ticks = candle_result.get("ticks") or candle_result.get("ticks_list") or []
+            if isinstance(ticks, list) and len(ticks) > 0:
+                ultima = ticks[-1]
+                if isinstance(ultima, dict):
+                    o = ultima.get("open"); h = ultima.get("high"); l = ultima.get("low"); c = ultima.get("close")
+                    if all(isinstance(x, (int, float)) for x in [o, h, l, c]):
+                        upper_wick = h - max(o, c)
+                        lower_wick = min(o, c) - l
 
-        # 7. Armazenar dados
+        # 6) armazenar com segurança
         dados[ativo] = {
             "mark": mark_price,
             "index": index_price,
@@ -188,8 +202,8 @@ def coletar_dados_deribit():
         }
 
     return dados
+    
 
-import pandas as pd
 from datetime import datetime
 
 def atualizar_deribit():
