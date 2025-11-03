@@ -1,11 +1,10 @@
+
 import os
 import psycopg2
 import requests
 import time
 import pandas as pd
 import numpy as np
-
-
 from psycopg2 import sql
 from dotenv import load_dotenv
 from datetime import datetime
@@ -26,7 +25,6 @@ def conectar_postgres():
             user=os.getenv("DB_USER"),
             password=os.getenv("DB_PASSWORD")
         )
-    return conn
 
 # Criação da tabela se não existir
 def criar_tabela_deribit(conn):
@@ -94,107 +92,69 @@ def criar_tabela_deribit(conn):
         """)
         conn.commit()
 
-# Função principal chamada pelo main.py
-def atualizar_deribit():
-    conn = None
-    try:
-        conn = conectar_postgres()
-        criar_tabela_deribit(conn)
-        print(f"[{datetime.now()}] Tabela verificada/criada com sucesso.")
-        # Aqui virá a lógica de coleta da API e inserção
-    except Exception as e:
-        print(f"Erro na atualização: {e}")
-    finally:
-        if conn is not None:
-            conn.close()
-
-
-
-DERIBIT_API_URL = "https://www.deribit.com/api/v2"
-
+# Função auxiliar para decodificar resposta da API
 def get_result_safe(response, descricao=""):
     try:
         data = response.json()
     except Exception as e:
-        print(f"⚠️ Erro ao decodificar JSON {descricao}: {e}")
+        print(f"Erro ao decodificar JSON {descricao}: {e}")
         return None
     if isinstance(data, dict) and "result" in data:
         return data["result"]
-    print(f"⚠️ Resposta inesperada {descricao}: {data}")
+    print(f"Resposta inesperada {descricao}: {data}")
     return None
 
+# Coleta dados da API Deribit
 def coletar_dados_deribit():
-    import requests, time
-    DERIBIT_API_URL = "https://www.deribit.com/api/v2"
     ativos = ["btc", "eth", "sol"]
     dados = {}
-    timestamp = int(time.time() * 1000)  # ms
+    timestamp = int(time.time() * 1000)
 
     for ativo in ativos:
-        # 1) Book summary (currency={ativo})
-        # Request book summary — sem 'kind=all', use currency em MAIÚSCULAS
-        r_book = requests.get(f"{DERIBIT_API_URL}/public/get_book_summary_by_currency?currency={ativo.upper()}")
+        r_book = requests.get(f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={ativo.upper()}")
         book_result = get_result_safe(r_book, f"book_summary {ativo}")
         if not book_result or not isinstance(book_result, list) or len(book_result) == 0:
-            print(f"⚠️ book_summary vazio para {ativo}, pulando ativo")
             continue
-        book_data = book_result[0] if isinstance(book_result, list) else book_result
+        book_data = book_result[0]
 
-        # Campos básicos (validação)
-        mark_price = book_data.get("mark_price") if isinstance(book_data, dict) else None
-        volume_24h = book_data.get("volume") if isinstance(book_data, dict) else None
-        open_interest = book_data.get("open_interest") if isinstance(book_data, dict) else None
+        mark_price = book_data.get("mark_price")
+        volume_24h = book_data.get("volume")
+        open_interest = book_data.get("open_interest")
+        funding_rate = book_data.get("funding_8h") or book_data.get("funding_8h_rate") or book_data.get("funding_rate")
 
-        # Funding rate extraído do book_summary quando disponível
-        funding_rate = None
-        if isinstance(book_data, dict):
-            funding_rate = book_data.get("funding_8h") or book_data.get("funding_8h_rate") or book_data.get("funding_rate")
-
-        # 2) Index price (index_name deve ser lowercase)
-        r_index = requests.get(f"{DERIBIT_API_URL}/public/get_index_price?index_name={ativo}_usd")
+        r_index = requests.get(f"https://www.deribit.com/api/v2/public/get_index_price?index_name={ativo}_usd")
         index_result = get_result_safe(r_index, f"index_price {ativo}")
         index_price = index_result.get("index_price") if isinstance(index_result, dict) else None
 
-        # 3) Premium rate (seguro)
         premium_rate = None
         if isinstance(mark_price, (int, float)) and isinstance(index_price, (int, float)) and index_price != 0:
             premium_rate = (mark_price - index_price) / index_price
 
-        # 4) DVOL (apenas btc e eth) - exige start_timestamp e end_timestamp
         dvol = None
         if ativo in ["btc", "eth"]:
-            start_ts = timestamp - (15 * 60 * 1000)  # 15 minutos atrás em ms (ajuste se quiser)
+            start_ts = timestamp - (15 * 60 * 1000)
             end_ts = timestamp
-            resolution = 60  # ajuste para 1, 5, 15, 60 conforme desejar
             r_dvol = requests.get(
-                f"{DERIBIT_API_URL}/public/get_volatility_index_data"
-                f"?currency={ativo}&start_timestamp={start_ts}&end_timestamp={end_ts}&resolution={resolution}")
+                f"https://www.deribit.com/api/v2/public/get_volatility_index_data?currency={ativo}&start_timestamp={start_ts}&end_timestamp={end_ts}&resolution=60"
+            )
             dvol_result = get_result_safe(r_dvol, f"dvol {ativo}")
-            dvol = None
             if isinstance(dvol_result, dict):
                 dvol = dvol_result.get("volatility") or dvol_result.get("value")
 
-    
-
-        # 5) Candlestick (vela) - instrument_name com ticker em MAIÚSCULAS para PERPETUAL
-        start_ts_candle = timestamp - (15 * 60 * 1000)
         r_candle = requests.get(
-            f"{DERIBIT_API_URL}/public/get_tradingview_chart_data?instrument_name={ativo.upper()}-PERPETUAL"
-            f"&start_timestamp={start_ts_candle}&end_timestamp={timestamp}&resolution=15"
+            f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data?instrument_name={ativo.upper()}-PERPETUAL&start_timestamp={timestamp - 15*60*1000}&end_timestamp={timestamp}&resolution=15"
         )
         candle_result = get_result_safe(r_candle, f"candlestick {ativo}")
         upper_wick = lower_wick = None
         if isinstance(candle_result, dict):
-            ticks = candle_result.get("ticks") or candle_result.get("ticks_list") or []
+            ticks = candle_result.get("ticks") or []
             if isinstance(ticks, list) and len(ticks) > 0:
                 ultima = ticks[-1]
-                if isinstance(ultima, dict):
-                    o = ultima.get("open"); h = ultima.get("high"); l = ultima.get("low"); c = ultima.get("close")
-                    if all(isinstance(x, (int, float)) for x in [o, h, l, c]):
-                        upper_wick = h - max(o, c)
-                        lower_wick = min(o, c) - l
+                o = ultima.get("open"); h = ultima.get("high"); l = ultima.get("low"); c = ultima.get("close")
+                if all(isinstance(x, (int, float)) for x in [o, h, l, c]):
+                    upper_wick = h - max(o, c)
+                    lower_wick = min(o, c) - l
 
-        # 6) armazenar com segurança
         dados[ativo] = {
             "mark": mark_price,
             "index": index_price,
@@ -208,14 +168,8 @@ def coletar_dados_deribit():
         }
 
     return dados
-    
 
-from datetime import datetime
-
-
-
-
-
+# Normaliza valores para inserção
 def normalize_value(v):
     if v is None:
         return None
@@ -234,30 +188,22 @@ def normalize_value(v):
     except Exception:
         return str(v)
 
-
-
+# Função principal de atualização
 def atualizar_deribit():
-    import pandas as pd
-    from datetime import datetime
-
     conn = None
     try:
         conn = conectar_postgres()
         criar_tabela_deribit(conn)
 
-        # Coleta dados atuais da Deribit
         dados_api = coletar_dados_deribit()
         timestamp = datetime.now()
 
-        # Se nada foi coletado, pula a atualização
         if not dados_api:
             print(f"[{timestamp}] Nenhum ativo coletado da Deribit — pulando insert.")
             return
 
-        # Busca dados anteriores para cálculo de métricas derivadas
         df_antigos = pd.read_sql("SELECT * FROM tb_deribit_info_ini ORDER BY timestamp DESC LIMIT 100", conn)
 
-        # Funções auxiliares
         def calcular_delta_vol(ativo):
             vol_atual = dados_api.get(ativo, {}).get("volume_24h")
             vol_anterior = df_antigos[f"v24h_{ativo}"].iloc[0] if not df_antigos.empty and f"v24h_{ativo}" in df_antigos.columns else None
@@ -274,16 +220,13 @@ def atualizar_deribit():
             desvio = calcular_std(serie, n)
             return (valor - media) / desvio if isinstance(valor, (int, float)) and media and desvio else None
 
-        # Monta linha para inserção; adiciona somente chaves com valor não None
         linha = {"timestamp": timestamp}
 
         for ativo in ["btc", "eth", "sol"]:
             if ativo not in dados_api:
-                print(f"⚠️ Dados ausentes para {ativo.upper()}, pulando...")
                 continue
 
             dados = dados_api[ativo]
-            # Campos básicos (usar .get para evitar KeyError)
             mark = dados.get("mark")
             index = dados.get("index")
             funding = dados.get("funding")
@@ -294,7 +237,6 @@ def atualizar_deribit():
             lower_wick = dados.get("lower_wick")
             dvol = dados.get("dvol") if ativo in ["btc", "eth"] else None
 
-            # Só insere chaves se o valor não for None
             if mark is not None: linha[f"{ativo.upper()}_Mark"] = mark
             if index is not None: linha[f"{ativo.upper()}_Index"] = index
             if funding is not None: linha[f"funding_{ativo.upper()}"] = funding
@@ -307,7 +249,6 @@ def atualizar_deribit():
             if lower_wick is not None: linha[f"Lower_Wick_{ativo.upper()}"] = lower_wick
             if dvol is not None: linha[f"DVOL_{ativo.upper()}"] = dvol
 
-            # Cálculos com pandas apenas se df_antigos tem colunas esperadas
             if not df_antigos.empty:
                 col_delta = f"DeltaVol_24h_{ativo.upper()}"
                 if col_delta in df_antigos.columns:
@@ -331,29 +272,21 @@ def atualizar_deribit():
                     if z12 is not None: linha[f"Zscore_OI_{ativo.upper()}_12"] = z12
                     if z48 is not None: linha[f"Zscore_OI_{ativo.upper()}_48"] = z48
 
-        # Verifica se há campos úteis além do timestamp
         campos_validos = {k: v for k, v in linha.items() if v is not None and k != "timestamp"}
         if not campos_validos:
             print(f"[{timestamp}] Nenhum dado válido coletado — pulando insert.")
             return
 
-        # Monta comando de inserção com as colunas presentes
         colunas = list(linha.keys())
         valores_raw = [linha[c] for c in colunas]
         valores = [normalize_value(v) for v in valores_raw]
 
         placeholders = ", ".join(["%s"] * len(colunas))
         colunas_sql = ", ".join(colunas)
-        # debug opcional: imprime tipos antes do insert
-        # for k, v in zip(colunas, valores):
-        #     print(f"DEBUG -> {k}: type={type(v)}, value={v}")
 
         with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO { 'tb_deribit_info_ini' } ({colunas_sql}) VALUES ({placeholders})", valores)
+            cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas_sql}) VALUES ({placeholders})", valores)
             conn.commit()
-
-
-
 
         print(f"[{timestamp}] Dados inseridos com sucesso.")
 
@@ -362,3 +295,7 @@ def atualizar_deribit():
     finally:
         if conn is not None:
             conn.close()
+
+# Executa a função principal quando chamado
+if __name__ == "__main__":
+    atualizar_deribit()
