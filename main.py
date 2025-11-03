@@ -8,6 +8,8 @@ import time
 import logging
 import requests
 import psycopg2
+import pandas as pd
+
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 from Alimenta_PostGre_Deribit import get_volatility_index
