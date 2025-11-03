@@ -271,49 +271,8 @@ def get_instrument_metrics(instrument_name: str) -> Dict[str, Optional[float]]:
 CANDLE_RESOLUTION = "15"
 
 def get_latest_candle_wicks(instrument_name: str, resolution: str = CANDLE_RESOLUTION) -> Dict[str, Optional[float]]:
-    result = {"upper_wick": None, "lower_wick": None}
-    if not instrument_name:
-        return result
-    now_ms = int(datetime.utcnow().timestamp() * 1000)
-    start_ms = now_ms - (int(resolution) * 60 * 1000 * 2)  # pegar janelas maiores: 2 candles de resolução
-    params = {
-        "instrument_name": instrument_name,
-        "resolution": resolution,
-        "start_timestamp": start_ms,
-        "end_timestamp": now_ms
-    }
-    try:
-        data = deribit_get("/public/get_tradingview_chart_data", params=params)
-        if not data or not isinstance(data, dict):
-            return result
-        o = data.get("o") or []
-        h = data.get("h") or []
-        l = data.get("l") or []
-        c = data.get("c") or []
-        t = data.get("t") or []
-        if not (o and h and l and c and t):
-            return result
-        last_idx = None
-        for i in range(len(t) - 1, -1, -1):
-            try:
-                if o[i] is not None and h[i] is not None and l[i] is not None and c[i] is not None:
-                    last_idx = i
-                    break
-            except Exception:
-                continue
-        if last_idx is None:
-            return result
-        open_p = float(o[last_idx])
-        high_p = float(h[last_idx])
-        low_p = float(l[last_idx])
-        close_p = float(c[last_idx])
-        upper_wick = high_p - max(open_p, close_p)
-        lower_wick = min(open_p, close_p) - low_p
-        result["upper_wick"] = upper_wick
-        result["lower_wick"] = lower_wick
-    except Exception as e:
-        logger.debug("Erro candles %s: %s", instrument_name, e)
-    return result
+    return {"upper_wick": 0.0, "lower_wick": 0.0}
+
 
 # Função principal de coleta e persistência
 def collect_and_store():
