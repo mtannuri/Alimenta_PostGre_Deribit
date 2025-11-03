@@ -92,6 +92,17 @@ INSERT INTO {TABLE_NAME} (
 );
 """
 
+def get_volatility_index(currency: str) -> Optional[float]:
+    try:
+        data = deribit_get("/public/get_volatility_index_data", params={"currency": currency})
+        if isinstance(data, dict):
+            return float(data.get("current_value") or 0)
+    except Exception as e:
+        logger.debug("Erro ao obter DVOL para %s: %s", currency, e)
+    return None
+
+
+
 # --- DB helpers
 def get_db_connection():
     if DB_URL:
@@ -184,58 +195,14 @@ def get_instrument_summary(instrument_name: str) -> Dict[str, Optional[float]]:
     return {k: to_float(v) for k, v in summary.items()}
 
 # --- Get latest candle using tradingview endpoint and compute wicks
-def get_latest_candle_wicks(instrument_name: str, resolution: str = "1") -> Dict[str, Optional[float]]:
-    # Deribit public endpoint: /public/get_tradingview_chart_data
-    # We'll request a small window (last 5 candles) and pick the last non-empty candle
-    now_ms = int(datetime.utcnow().timestamp() * 1000)
-    start_ms = now_ms - (5 * 60 * 1000)  # 5 minutes back
-    params = {
-        "symbol": instrument_name,
-        "resolution": resolution,
-        "start_timestamp": start_ms,
-        "end_timestamp": now_ms
-    }
-    result = {
-        "upper_wick": None,
-        "lower_wick": None
-    }
-    try:
-        data = deribit_get("/public/get_tradingview_chart_data", params=params)
-        # Expected keys: t (timestamps), o, h, l, c, v
-        if not data or not isinstance(data, dict):
-            return result
-        o = data.get("o") or []
-        h = data.get("h") or []
-        l = data.get("l") or []
-        c = data.get("c") or []
-        if not (o and h and l and c):
-            return result
-        # take last index where values exist
-        last_idx = None
-        for i in range(len(t := data.get("t", [])) - 1, -1, -1):
-            try:
-                if o[i] is not None and h[i] is not None and l[i] is not None and c[i] is not None:
-                    last_idx = i
-                    break
-            except Exception:
-                continue
-        if last_idx is None:
-            return result
-        open_p = float(o[last_idx])
-        high_p = float(h[last_idx])
-        low_p = float(l[last_idx])
-        close_p = float(c[last_idx])
-        upper_wick = high_p - max(open_p, close_p)
-        lower_wick = min(open_p, close_p) - low_p
-        result["upper_wick"] = upper_wick
-        result["lower_wick"] = lower_wick
-    except Exception as e:
-        logger.debug("Erro ao obter candles para %s: %s", instrument_name, e)
-    return result
+def get_latest_candle_wicks(instrument_name: str, resolution: str = CANDLE_RESOLUTION) -> Dict[str, Optional[float]]:
+    return {"upper_wick": 0.0, "lower_wick": 0.0}
+
 
 # --- Main collect and store
 def collect_and_store():
-    timestamp = datetime.utcnow()
+    from datetime import datetime, timezone
+    timestamp = datetime.now(timezone.utc)
 
     # instrument names
     BTC_INSTR = "BTC-PERPETUAL"
@@ -269,8 +236,8 @@ def collect_and_store():
         "v24h_btc": btc_summary.get("v24h"),
         "v24h_eth": eth_summary.get("v24h"),
         "v24h_sol": sol_summary.get("v24h"),
-        "dvol_btc": btc_summary.get("dvol"),
-        "dvol_eth": eth_summary.get("dvol"),
+        "dvol_btc": btc_summary.get("BTC"),
+        "dvol_eth": eth_summary.get("ETH"),
         "upper_wick_btc": btc_wicks.get("upper_wick"),
         "lower_wick_btc": btc_wicks.get("lower_wick"),
         "upper_wick_eth": eth_wicks.get("upper_wick"),
