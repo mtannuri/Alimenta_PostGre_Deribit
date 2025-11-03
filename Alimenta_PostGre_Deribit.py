@@ -1,301 +1,309 @@
+#!/usr/bin/env python3
+# Alimenta_PostGre_Deribit.py
+# Executar: python Alimenta_PostGre_Deribit.py
 
 import os
-import psycopg2
-import requests
 import time
-import pandas as pd
-import numpy as np
-from psycopg2 import sql
-from dotenv import load_dotenv
-from datetime import datetime
+import json
+import logging
+import requests
+import psycopg2
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any
 
-# Carrega variáveis de ambiente
-load_dotenv()
+# --- Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+logger = logging.getLogger("Alimenta_PostGre_Deribit")
 
-# Conexão ao banco
-def conectar_postgres():
-    db_url = os.getenv("DB_URL")
-    if db_url:
-        return psycopg2.connect(db_url)
-    else:
-        return psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT"),
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD")
-        )
+# --- Env vars para DB
+DB_HOST = os.getenv("DB_HOST")
+DB_NAME = os.getenv("DB_NAME")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_PORT = os.getenv("DB_PORT", "5432")
+DB_URL = os.getenv("DB_URL")
+DB_USER = os.getenv("DB_USER")
 
-# Criação da tabela se não existir
-def criar_tabela_deribit(conn):
+if not (DB_NAME and DB_USER and (DB_HOST or DB_URL) and DB_PASSWORD):
+    logger.error("Faltam variáveis de ambiente de BD. Defina DB_HOST/DB_URL, DB_NAME, DB_USER, DB_PASSWORD.")
+    raise SystemExit(1)
+
+# --- Deribit API base
+DERIBIT_BASE = "https://www.deribit.com/api/v2"
+
+# --- Tabela alvo
+TABLE_NAME = "tb_deribit_info_ini"
+
+# --- Criação da tabela (adicionados campos de candle upper/lower wicks)
+CREATE_TABLE_SQL = f"""
+CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL,
+    btc_mark NUMERIC,
+    btc_index NUMERIC,
+    eth_mark NUMERIC,
+    eth_index NUMERIC,
+    sol_mark NUMERIC,
+    sol_index NUMERIC,
+    funding_btc NUMERIC,
+    funding_eth NUMERIC,
+    funding_sol NUMERIC,
+    open_interest_btc NUMERIC,
+    open_interest_eth NUMERIC,
+    open_interest_sol NUMERIC,
+    v24h_btc NUMERIC,
+    v24h_eth NUMERIC,
+    v24h_sol NUMERIC,
+    dvol_btc NUMERIC,
+    dvol_eth NUMERIC,
+    upper_wick_btc NUMERIC,
+    lower_wick_btc NUMERIC,
+    upper_wick_eth NUMERIC,
+    lower_wick_eth NUMERIC,
+    upper_wick_sol NUMERIC,
+    lower_wick_sol NUMERIC
+);
+"""
+
+INSERT_SQL = f"""
+INSERT INTO {TABLE_NAME} (
+    timestamp,
+    btc_mark, btc_index,
+    eth_mark, eth_index,
+    sol_mark, sol_index,
+    funding_btc, funding_eth, funding_sol,
+    open_interest_btc, open_interest_eth, open_interest_sol,
+    v24h_btc, v24h_eth, v24h_sol,
+    dvol_btc, dvol_eth,
+    upper_wick_btc, lower_wick_btc,
+    upper_wick_eth, lower_wick_eth,
+    upper_wick_sol, lower_wick_sol
+) VALUES (
+    %(timestamp)s,
+    %(btc_mark)s, %(btc_index)s,
+    %(eth_mark)s, %(eth_index)s,
+    %(sol_mark)s, %(sol_index)s,
+    %(funding_btc)s, %(funding_eth)s, %(funding_sol)s,
+    %(open_interest_btc)s, %(open_interest_eth)s, %(open_interest_sol)s,
+    %(v24h_btc)s, %(v24h_eth)s, %(v24h_sol)s,
+    %(dvol_btc)s, %(dvol_eth)s,
+    %(upper_wick_btc)s, %(lower_wick_btc)s,
+    %(upper_wick_eth)s, %(lower_wick_eth)s,
+    %(upper_wick_sol)s, %(lower_wick_sol)s
+);
+"""
+
+# --- DB helpers
+def get_db_connection():
+    if DB_URL:
+        return psycopg2.connect(DB_URL)
+    return psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT
+    )
+
+def ensure_table_exists(conn):
     with conn.cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS tb_deribit_info_ini (
-                timestamp TIMESTAMP PRIMARY KEY,
-                BTC_Mark FLOAT,
-                BTC_Index FLOAT,
-                ETH_Mark FLOAT,
-                ETH_Index FLOAT,
-                SOL_Mark FLOAT,
-                SOL_Index FLOAT,
-                funding_BTC FLOAT,
-                funding_ETH FLOAT,
-                funding_SOL FLOAT,
-                open_interest_BTC FLOAT,
-                open_interest_ETH FLOAT,
-                open_interest_SOL FLOAT,
-                funding_BTC_PremiumRate FLOAT,
-                funding_ETH_PremiumRate FLOAT,
-                funding_SOL_PremiumRate FLOAT,
-                v24h_BTC FLOAT,
-                v24h_ETH FLOAT,
-                v24h_SOL FLOAT,
-                DeltaVol_24h_BTC FLOAT,
-                DeltaVol_24h_ETH FLOAT,
-                DeltaVol_24h_SOL FLOAT,
-                MA_DeltaVol_24h_BTC FLOAT,
-                MA_DeltaVol_24h_ETH FLOAT,
-                MA_DeltaVol_24h_SOL FLOAT,
-                Zscore_DeltaVol_24h_BTC FLOAT,
-                Zscore_DeltaVol_24h_ETH FLOAT,
-                Zscore_DeltaVol_24h_SOL FLOAT,
-                Delta_open_interes_BTC FLOAT,
-                Delta_open_interes_ETH FLOAT,
-                Delta_open_interes_SOL FLOAT,
-                MA_OI_BTC_12 FLOAT,
-                MA_OI_ETH_12 FLOAT,
-                MA_OI_SOL_12 FLOAT,
-                MA_OI_BTC_48 FLOAT,
-                MA_OI_ETH_48 FLOAT,
-                MA_OI_SOL_48 FLOAT,
-                STD_OI_BTC_12 FLOAT,
-                STD_OI_ETH_12 FLOAT,
-                STD_OI_SOL_12 FLOAT,
-                STD_OI_BTC_48 FLOAT,
-                STD_OI_ETH_48 FLOAT,
-                STD_OI_SOL_48 FLOAT,
-                Zscore_OI_BTC_12 FLOAT,
-                Zscore_OI_ETH_12 FLOAT,
-                Zscore_OI_SOL_12 FLOAT,
-                Zscore_OI_BTC_48 FLOAT,
-                Zscore_OI_ETH_48 FLOAT,
-                Zscore_OI_SOL_48 FLOAT,
-                Upper_Wick_BTC FLOAT,
-                Lower_Wick_BTC FLOAT,
-                Upper_Wick_ETH FLOAT,
-                Lower_Wick_ETH FLOAT,
-                Upper_Wick_SOL FLOAT,
-                Lower_Wick_SOL FLOAT,
-                DVOL_BTC FLOAT,
-                DVOL_ETH FLOAT
-            );
-        """)
-        conn.commit()
+        cur.execute(CREATE_TABLE_SQL)
+    conn.commit()
+    logger.debug("Tabela verificada/criada.")
 
-# Função auxiliar para decodificar resposta da API
-def get_result_safe(response, descricao=""):
+# --- Deribit request with retries
+def deribit_get(path: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, backoff: float = 1.0) -> Any:
+    url = f"{DERIBIT_BASE}{path}"
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if isinstance(data, dict) and "result" in data:
+                return data["result"]
+            return data
+        except Exception as exc:
+            logger.warning("Erro Deribit %s tentativa %d/%d: %s", url, attempt, retries, exc)
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+            else:
+                logger.error("Falha ao acessar Deribit: %s", exc)
+                raise
+
+# --- Collect ticker/summary per instrument (mark, index, funding, open_interest, volume, dvol)
+def get_instrument_summary(instrument_name: str) -> Dict[str, Optional[float]]:
+    # Usaremos endpoint /public/ticker para mark_price e index_price e /public/get_book_summary_by_instrument para open interest/volume possivelmente
+    summary: Dict[str, Optional[float]] = {
+        "mark": None,
+        "index": None,
+        "funding": None,
+        "open_interest": None,
+        "v24h": None,
+        "dvol": None
+    }
     try:
-        data = response.json()
+        # ticker fornece mark_price e index_price, and maybe funding rate fields
+        ticker = deribit_get("/public/ticker", params={"instrument_name": instrument_name})
+        if isinstance(ticker, dict):
+            summary["mark"] = ticker.get("mark_price") or ticker.get("mark")
+            summary["index"] = ticker.get("index_price") or ticker.get("underlying_index")
+            # funding_rate may be in ticker as "funding_8h" or "current_funding"
+            summary["funding"] = ticker.get("funding_8h") or ticker.get("funding_rate") or ticker.get("current_funding")
     except Exception as e:
-        print(f"Erro ao decodificar JSON {descricao}: {e}")
-        return None
-    if isinstance(data, dict) and "result" in data:
-        return data["result"]
-    print(f"Resposta inesperada {descricao}: {data}")
-    return None
+        logger.debug("Erro ao obter ticker para %s: %s", instrument_name, e)
 
-# Coleta dados da API Deribit
-def coletar_dados_deribit():
-    ativos = ["btc", "eth", "sol"]
-    dados = {}
-    timestamp = int(time.time() * 1000)
-
-    for ativo in ativos:
-        r_book = requests.get(f"https://www.deribit.com/api/v2/public/get_book_summary_by_currency?currency={ativo.upper()}")
-        book_result = get_result_safe(r_book, f"book_summary {ativo}")
-        if not book_result or not isinstance(book_result, list) or len(book_result) == 0:
-            continue
-        book_data = book_result[0]
-
-        mark_price = book_data.get("mark_price")
-        volume_24h = book_data.get("volume")
-        open_interest = book_data.get("open_interest")
-        funding_rate = book_data.get("funding_8h") or book_data.get("funding_8h_rate") or book_data.get("funding_rate")
-
-        r_index = requests.get(f"https://www.deribit.com/api/v2/public/get_index_price?index_name={ativo}_usd")
-        index_result = get_result_safe(r_index, f"index_price {ativo}")
-        index_price = index_result.get("index_price") if isinstance(index_result, dict) else None
-
-        premium_rate = None
-        if isinstance(mark_price, (int, float)) and isinstance(index_price, (int, float)) and index_price != 0:
-            premium_rate = (mark_price - index_price) / index_price
-
-        dvol = None
-        if ativo in ["btc", "eth"]:
-            start_ts = timestamp - (15 * 60 * 1000)
-            end_ts = timestamp
-            r_dvol = requests.get(
-                f"https://www.deribit.com/api/v2/public/get_volatility_index_data?currency={ativo}&start_timestamp={start_ts}&end_timestamp={end_ts}&resolution=60"
-            )
-            dvol_result = get_result_safe(r_dvol, f"dvol {ativo}")
-            if isinstance(dvol_result, dict):
-                dvol = dvol_result.get("volatility") or dvol_result.get("value")
-
-        r_candle = requests.get(
-            f"https://www.deribit.com/api/v2/public/get_tradingview_chart_data?instrument_name={ativo.upper()}-PERPETUAL&start_timestamp={timestamp - 15*60*1000}&end_timestamp={timestamp}&resolution=15"
-        )
-        candle_result = get_result_safe(r_candle, f"candlestick {ativo}")
-        upper_wick = lower_wick = None
-        if isinstance(candle_result, dict):
-            ticks = candle_result.get("ticks") or []
-            if isinstance(ticks, list) and len(ticks) > 0:
-                ultima = ticks[-1]
-                o = ultima.get("open"); h = ultima.get("high"); l = ultima.get("low"); c = ultima.get("close")
-                if all(isinstance(x, (int, float)) for x in [o, h, l, c]):
-                    upper_wick = h - max(o, c)
-                    lower_wick = min(o, c) - l
-
-        dados[ativo] = {
-            "mark": mark_price,
-            "index": index_price,
-            "funding": funding_rate,
-            "premium_rate": premium_rate,
-            "volume_24h": volume_24h,
-            "open_interest": open_interest,
-            "dvol": dvol,
-            "upper_wick": upper_wick,
-            "lower_wick": lower_wick
-        }
-
-    return dados
-
-# Normaliza valores para inserção
-def normalize_value(v):
-    if v is None:
-        return None
-    if isinstance(v, (np.generic,)):
-        return v.item()
-    if isinstance(v, (np.ndarray,)):
-        return v.tolist()
-    if isinstance(v, pd.Timestamp):
-        return v.to_pydatetime()
-    if isinstance(v, pd.Series):
-        return v.tolist()
-    if isinstance(v, (int, float, str, bool)):
-        return v
     try:
-        return float(v)
-    except Exception:
-        return str(v)
+        # book summary by instrument can include open_interest and volume
+        book = deribit_get("/public/get_book_summary_by_instrument", params={"instrument_name": instrument_name})
+        # book may return a dict with "book_summary" or list; normalize
+        summaries = []
+        if isinstance(book, dict) and "book_summary" in book:
+            summaries = book["book_summary"]
+        elif isinstance(book, list):
+            summaries = book
+        elif isinstance(book, dict):
+            summaries = [book]
+        if summaries:
+            b = summaries[0]
+            summary["open_interest"] = b.get("open_interest") or b.get("oi")
+            # Try several places for volume
+            if "stats" in b and isinstance(b["stats"], dict):
+                summary["v24h"] = b["stats"].get("volume") or b["stats"].get("volume_usd")
+            summary["v24h"] = summary["v24h"] or b.get("volume") or b.get("volume_24h")
+            # DVOL may not be present; try common keys
+            summary["dvol"] = b.get("dvol") or b.get("dv") or b.get("daily_volatility")
+    except Exception as e:
+        logger.debug("Erro ao obter book_summary para %s: %s", instrument_name, e)
 
-# Função principal de atualização
-def atualizar_deribit():
+    # normalize floats
+    def to_float(v):
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+
+    return {k: to_float(v) for k, v in summary.items()}
+
+# --- Get latest candle using tradingview endpoint and compute wicks
+def get_latest_candle_wicks(instrument_name: str, resolution: str = "1") -> Dict[str, Optional[float]]:
+    # Deribit public endpoint: /public/get_tradingview_chart_data
+    # We'll request a small window (last 5 candles) and pick the last non-empty candle
+    now_ms = int(datetime.utcnow().timestamp() * 1000)
+    start_ms = now_ms - (5 * 60 * 1000)  # 5 minutes back
+    params = {
+        "symbol": instrument_name,
+        "resolution": resolution,
+        "start_timestamp": start_ms,
+        "end_timestamp": now_ms
+    }
+    result = {
+        "upper_wick": None,
+        "lower_wick": None
+    }
+    try:
+        data = deribit_get("/public/get_tradingview_chart_data", params=params)
+        # Expected keys: t (timestamps), o, h, l, c, v
+        if not data or not isinstance(data, dict):
+            return result
+        o = data.get("o") or []
+        h = data.get("h") or []
+        l = data.get("l") or []
+        c = data.get("c") or []
+        if not (o and h and l and c):
+            return result
+        # take last index where values exist
+        last_idx = None
+        for i in range(len(t := data.get("t", [])) - 1, -1, -1):
+            try:
+                if o[i] is not None and h[i] is not None and l[i] is not None and c[i] is not None:
+                    last_idx = i
+                    break
+            except Exception:
+                continue
+        if last_idx is None:
+            return result
+        open_p = float(o[last_idx])
+        high_p = float(h[last_idx])
+        low_p = float(l[last_idx])
+        close_p = float(c[last_idx])
+        upper_wick = high_p - max(open_p, close_p)
+        lower_wick = min(open_p, close_p) - low_p
+        result["upper_wick"] = upper_wick
+        result["lower_wick"] = lower_wick
+    except Exception as e:
+        logger.debug("Erro ao obter candles para %s: %s", instrument_name, e)
+    return result
+
+# --- Main collect and store
+def collect_and_store():
+    timestamp = datetime.utcnow()
+
+    # instrument names
+    BTC_INSTR = "BTC-PERPETUAL"
+    ETH_INSTR = "ETH-PERPETUAL"
+    SOL_INSTR = "SOL-PERPETUAL"
+
+    # summaries
+    btc_summary = get_instrument_summary(BTC_INSTR)
+    eth_summary = get_instrument_summary(ETH_INSTR)
+    sol_summary = get_instrument_summary(SOL_INSTR)
+
+    # candles wicks (resolution 1 minute)
+    btc_wicks = get_latest_candle_wicks(BTC_INSTR, resolution="1")
+    eth_wicks = get_latest_candle_wicks(ETH_INSTR, resolution="1")
+    sol_wicks = get_latest_candle_wicks(SOL_INSTR, resolution="1")
+
+    payload = {
+        "timestamp": timestamp,
+        "btc_mark": btc_summary.get("mark"),
+        "btc_index": btc_summary.get("index"),
+        "eth_mark": eth_summary.get("mark"),
+        "eth_index": eth_summary.get("index"),
+        "sol_mark": sol_summary.get("mark"),
+        "sol_index": sol_summary.get("index"),
+        "funding_btc": btc_summary.get("funding"),
+        "funding_eth": eth_summary.get("funding"),
+        "funding_sol": sol_summary.get("funding"),
+        "open_interest_btc": btc_summary.get("open_interest"),
+        "open_interest_eth": eth_summary.get("open_interest"),
+        "open_interest_sol": sol_summary.get("open_interest"),
+        "v24h_btc": btc_summary.get("v24h"),
+        "v24h_eth": eth_summary.get("v24h"),
+        "v24h_sol": sol_summary.get("v24h"),
+        "dvol_btc": btc_summary.get("dvol"),
+        "dvol_eth": eth_summary.get("dvol"),
+        "upper_wick_btc": btc_wicks.get("upper_wick"),
+        "lower_wick_btc": btc_wicks.get("lower_wick"),
+        "upper_wick_eth": eth_wicks.get("upper_wick"),
+        "lower_wick_eth": eth_wicks.get("lower_wick"),
+        "upper_wick_sol": sol_wicks.get("upper_wick"),
+        "lower_wick_sol": sol_wicks.get("lower_wick")
+    }
+
+    logger.info("Payload coletado: %s", json.dumps({k: v for k, v in payload.items() if k != "timestamp"}, default=str))
+
     conn = None
     try:
-        conn = conectar_postgres()
-        criar_tabela_deribit(conn)
-
-        dados_api = coletar_dados_deribit()
-        timestamp = datetime.now()
-
-        if not dados_api:
-            print(f"[{timestamp}] Nenhum ativo coletado da Deribit — pulando insert.")
-            return
-
-        df_antigos = pd.read_sql("SELECT * FROM tb_deribit_info_ini ORDER BY timestamp DESC LIMIT 100", conn)
-
-        def calcular_delta_vol(ativo):
-            vol_atual = dados_api.get(ativo, {}).get("volume_24h")
-            vol_anterior = df_antigos[f"v24h_{ativo}"].iloc[0] if not df_antigos.empty and f"v24h_{ativo}" in df_antigos.columns else None
-            return vol_atual - vol_anterior if isinstance(vol_atual, (int, float)) and isinstance(vol_anterior, (int, float)) else None
-
-        def calcular_ma(serie, n):
-            return serie.head(n).mean() if len(serie) >= n else None
-
-        def calcular_std(serie, n):
-            return serie.head(n).std() if len(serie) >= n else None
-
-        def calcular_zscore(valor, serie, n):
-            media = calcular_ma(serie, n)
-            desvio = calcular_std(serie, n)
-            return (valor - media) / desvio if isinstance(valor, (int, float)) and media and desvio else None
-
-        linha = {"timestamp": timestamp}
-
-        for ativo in ["btc", "eth", "sol"]:
-            if ativo not in dados_api:
-                continue
-
-            dados = dados_api[ativo]
-            mark = dados.get("mark")
-            index = dados.get("index")
-            funding = dados.get("funding")
-            oi = dados.get("open_interest")
-            premium = dados.get("premium_rate")
-            v24h = dados.get("volume_24h")
-            upper_wick = dados.get("upper_wick")
-            lower_wick = dados.get("lower_wick")
-            dvol = dados.get("dvol") if ativo in ["btc", "eth"] else None
-
-            if mark is not None: linha[f"{ativo.upper()}_Mark"] = mark
-            if index is not None: linha[f"{ativo.upper()}_Index"] = index
-            if funding is not None: linha[f"funding_{ativo.upper()}"] = funding
-            if oi is not None: linha[f"open_interest_{ativo.upper()}"] = oi
-            if premium is not None: linha[f"funding_{ativo.upper()}_PremiumRate"] = premium
-            if v24h is not None: linha[f"v24h_{ativo.upper()}"] = v24h
-            delta_vol = calcular_delta_vol(ativo)
-            if delta_vol is not None: linha[f"DeltaVol_24h_{ativo.upper()}"] = delta_vol
-            if upper_wick is not None: linha[f"Upper_Wick_{ativo.upper()}"] = upper_wick
-            if lower_wick is not None: linha[f"Lower_Wick_{ativo.upper()}"] = lower_wick
-            if dvol is not None: linha[f"DVOL_{ativo.upper()}"] = dvol
-
-            if not df_antigos.empty:
-                col_delta = f"DeltaVol_24h_{ativo.upper()}"
-                if col_delta in df_antigos.columns:
-                    serie_delta_vol = df_antigos[col_delta]
-                    ma = calcular_ma(serie_delta_vol, 12)
-                    if ma is not None: linha[f"MA_DeltaVol_24h_{ativo.upper()}"] = ma
-                    z = calcular_zscore(delta_vol, serie_delta_vol, 12) if delta_vol is not None else None
-                    if z is not None: linha[f"Zscore_DeltaVol_24h_{ativo.upper()}"] = z
-
-                col_oi = f"open_interest_{ativo.upper()}"
-                if col_oi in df_antigos.columns and oi is not None:
-                    serie_oi = df_antigos[col_oi]
-                    linha[f"Delta_open_interes_{ativo.upper()}"] = oi - serie_oi.iloc[0] if isinstance(serie_oi.iloc[0], (int, float)) else None
-                    ma12 = calcular_ma(serie_oi, 12); ma48 = calcular_ma(serie_oi, 48)
-                    if ma12 is not None: linha[f"MA_OI_{ativo.upper()}_12"] = ma12
-                    if ma48 is not None: linha[f"MA_OI_{ativo.upper()}_48"] = ma48
-                    std12 = calcular_std(serie_oi, 12); std48 = calcular_std(serie_oi, 48)
-                    if std12 is not None: linha[f"STD_OI_{ativo.upper()}_12"] = std12
-                    if std48 is not None: linha[f"STD_OI_{ativo.upper()}_48"] = std48
-                    z12 = calcular_zscore(oi, serie_oi, 12); z48 = calcular_zscore(oi, serie_oi, 48)
-                    if z12 is not None: linha[f"Zscore_OI_{ativo.upper()}_12"] = z12
-                    if z48 is not None: linha[f"Zscore_OI_{ativo.upper()}_48"] = z48
-
-        campos_validos = {k: v for k, v in linha.items() if v is not None and k != "timestamp"}
-        if not campos_validos:
-            print(f"[{timestamp}] Nenhum dado válido coletado — pulando insert.")
-            return
-
-        colunas = list(linha.keys())
-        valores_raw = [linha[c] for c in colunas]
-        valores = [normalize_value(v) for v in valores_raw]
-
-        placeholders = ", ".join(["%s"] * len(colunas))
-        colunas_sql = ", ".join(colunas)
-
+        conn = get_db_connection()
+        ensure_table_exists(conn)
         with conn.cursor() as cur:
-            cur.execute(f"INSERT INTO tb_deribit_info_ini ({colunas_sql}) VALUES ({placeholders})", valores)
-            conn.commit()
-
-        print(f"[{timestamp}] Dados inseridos com sucesso.")
-
+            cur.execute(INSERT_SQL, payload)
+        conn.commit()
+        logger.info("Inserido no banco com timestamp %s", timestamp.isoformat())
     except Exception as e:
-        print(f"Erro na atualização: {e}")
+        logger.exception("Erro ao persistir dados: %s", e)
+        if conn:
+            conn.rollback()
+        raise
     finally:
-        if conn is not None:
+        if conn:
             conn.close()
 
-# Executa a função principal quando chamado
+def main():
+    try:
+        collect_and_store()
+    except Exception as e:
+        logger.error("Execução finalizada com erro: %s", e)
+        raise
+
 if __name__ == "__main__":
-    atualizar_deribit()
+    main()
