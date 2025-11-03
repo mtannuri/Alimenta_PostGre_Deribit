@@ -10,6 +10,7 @@ import requests
 import psycopg2
 from datetime import datetime
 from typing import Optional, Dict, Any
+from datetime import timezone, timedelta
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -147,33 +148,69 @@ def choose_pair_from_currency(currency: str, preferred_quote: str = "USDC") -> O
     return chosen
 
 # Resolver instrument perp para candle/funding/open_interest
-def resolve_perp_instrument(currency: str) -> Optional[str]:
+from datetime import timezone, timedelta
+
+def resolve_perp_instrument(currency: str, min_days_to_expire: int = 30) -> Optional[str]:
     try:
         instruments = deribit_get("/public/get_instruments", params={"currency": currency})
         if not instruments or not isinstance(instruments, list):
             return None
-        # procurar por instrumentos com "PERP" no name ou kind == "perpetual" ou settlement_period == "perpetual"
+
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        min_expiration_ms = now_ms + int(min_days_to_expire * 24 * 60 * 60 * 1000)
+
+        def is_long_lived(ins):
+            exp = ins.get("expiration_timestamp")
+            if not exp:
+                return True
+            try:
+                return int(exp) >= min_expiration_ms
+            except Exception:
+                return True
+
+        perp_candidates = []
         for ins in instruments:
-            name = ins.get("instrument_name", "")
+            name = (ins.get("instrument_name") or "").lower()
+            settlement = (ins.get("settlement_period") or "").lower()
             kind = (ins.get("kind") or "").lower()
-            settlement_period = (ins.get("settlement_period") or "").lower()
-            if "perp" in name.lower() or "perpetual" in name.lower() or kind == "perpetual" or settlement_period == "perpetual":
-                return name
-        # fallback: procurar instrument_name == "<CUR>-PERPETUAL"
-        fallback = f"{currency.upper()}-PERPETUAL"
-        for ins in instruments:
-            if ins.get("instrument_name") == fallback:
-                return fallback
-        # último recurso: escolher primeiro instrumento com kind in ("future","future_combo") ou the first instrument
-        for ins in instruments:
-            if (ins.get("kind") or "").lower() in ("future", "future_combo"):
-                return ins.get("instrument_name")
-        if instruments:
-            return instruments[0].get("instrument_name")
+            if ("perp" in name or "perpetual" in name or settlement == "perpetual" or kind == "perpetual") and is_long_lived(ins):
+                perp_candidates.append(ins)
+
+        exact_name = f"{currency.upper()}-PERPETUAL"
+        for ins in perp_candidates:
+            if ins.get("instrument_name") == exact_name:
+                return exact_name
+
+        if perp_candidates:
+            def score(ins):
+                exp = ins.get("expiration_timestamp") or 0
+                s = 0
+                if (ins.get("settlement_period") or "").lower() == "perpetual":
+                    s += 1000
+                try:
+                    s += int(exp) // (24*3600*1000)
+                except Exception:
+                    s += 0
+                return s
+            best = max(perp_candidates, key=score)
+            return best.get("instrument_name")
+
+        far_candidates = [ins for ins in instruments if is_long_lived(ins)]
+        if far_candidates:
+            def exp_value(ins):
+                try:
+                    return int(ins.get("expiration_timestamp") or 0)
+                except Exception:
+                    return 0
+            best = max(far_candidates, key=exp_value)
+            return best.get("instrument_name")
+
+        if any(ins.get("instrument_name") == exact_name for ins in instruments):
+            return exact_name
+        return None
     except Exception as e:
         logger.debug("Erro ao resolver perp para %s: %s", currency, e)
-    return None
-
+        return None
 # Extrair summary (mark/index/v24h/dvol/open_interest) a partir de objeto de book_summary (par)
 def extract_from_book_summary_obj(obj: Dict[str, Any]) -> Dict[str, Optional[float]]:
     def to_float(v):
