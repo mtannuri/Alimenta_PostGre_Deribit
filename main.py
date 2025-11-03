@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 # Alimenta_PostGre_Deribit.py
+# Único script para coletar métricas da Deribit e inserir em PostgreSQL
+# Start Command (Render PredCripto): python Alimenta_PostGre_Deribit.py
 
 import os
 import time
@@ -31,7 +33,7 @@ DERIBIT_BASE = "https://www.deribit.com/api/v2"
 # Tabela alvo
 TABLE_NAME = "tb_deribit_info_ini"
 
-# Criação da tabela simplificada (BTC + ETH)
+# Criação da tabela (colunas solicitadas)
 CREATE_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
     id SERIAL PRIMARY KEY,
@@ -116,76 +118,127 @@ def deribit_get(path: str, params: Optional[Dict[str, Any]] = None, retries: int
                 logger.error("Falha ao acessar Deribit: %s", exc)
                 raise
 
-# Resolver instrument perpétuo disponível para a moeda
+# Escolha determinística do par representativo a partir de get_book_summary_by_currency
+# Implementamos preferencia por quote_currency == "USDC" (escolha do usuário) e maior volume_usd
+def choose_pair_from_currency(currency: str, preferred_quote: str = "USDC") -> Optional[Dict[str, Any]]:
+    summaries = deribit_get("/public/get_book_summary_by_currency", params={"currency": currency})
+    if not summaries or not isinstance(summaries, list):
+        return None
+    # Filtrar por base_currency == currency ou base_currency igual ao esperado
+    candidates = [s for s in summaries if (s.get("base_currency") or "").upper() == currency.upper()]
+    if not candidates:
+        candidates = summaries
+    # Prefer preferred_quote
+    preferred = [c for c in candidates if (c.get("quote_currency") or "").upper() == preferred_quote.upper()]
+    if preferred:
+        # escolher o com maior volume_usd
+        def vol_usd(x): 
+            try: return float(x.get("volume_usd") or 0)
+            except Exception: return 0
+        chosen = max(preferred, key=vol_usd)
+        logger.info("Pair chosen for %s by preferred_quote %s: %s", currency, preferred_quote, chosen.get("instrument_name"))
+        return chosen
+    # se não encontrou preferred, escolher por maior volume_usd entre candidatos
+    def vol_usd(x):
+        try: return float(x.get("volume_usd") or 0)
+        except Exception: return 0
+    chosen = max(candidates, key=vol_usd)
+    logger.info("Pair chosen for %s by volume: %s", currency, chosen.get("instrument_name"))
+    return chosen
+
+# Resolver instrument perp para candle/funding/open_interest
 def resolve_perp_instrument(currency: str) -> Optional[str]:
     try:
         instruments = deribit_get("/public/get_instruments", params={"currency": currency})
         if not instruments or not isinstance(instruments, list):
             return None
-        # procurar por kind == "perpetual" ou nome contendo "PERPETUAL" ou "PERP"
+        # procurar por instrumentos com "PERP" no name ou kind == "perpetual" ou settlement_period == "perpetual"
         for ins in instruments:
             name = ins.get("instrument_name", "")
             kind = (ins.get("kind") or "").lower()
-            if kind == "perpetual" or "perpetual" in name.lower() or "perp" in name.lower():
+            settlement_period = (ins.get("settlement_period") or "").lower()
+            if "perp" in name.lower() or "perpetual" in name.lower() or kind == "perpetual" or settlement_period == "perpetual":
                 return name
-        # fallback: retornar primeiro instrumento com kind == "future" ou primeiro da lista
+        # fallback: procurar instrument_name == "<CUR>-PERPETUAL"
+        fallback = f"{currency.upper()}-PERPETUAL"
         for ins in instruments:
-            if (ins.get("kind") or "").lower() == "future":
+            if ins.get("instrument_name") == fallback:
+                return fallback
+        # último recurso: escolher primeiro instrumento com kind in ("future","future_combo") ou the first instrument
+        for ins in instruments:
+            if (ins.get("kind") or "").lower() in ("future", "future_combo"):
                 return ins.get("instrument_name")
-        return instruments[0].get("instrument_name")
+        if instruments:
+            return instruments[0].get("instrument_name")
     except Exception as e:
-        logger.debug("Erro ao resolver instrumento para %s: %s", currency, e)
-        return None
+        logger.debug("Erro ao resolver perp para %s: %s", currency, e)
+    return None
 
-# Obter summary por instrumento
-def get_instrument_summary(instrument_name: str) -> Dict[str, Optional[float]]:
-    summary = {"mark": None, "index": None, "funding": None, "open_interest": None, "v24h": None, "dvol": None}
+# Extrair summary (mark/index/v24h/dvol/open_interest) a partir de objeto de book_summary (par)
+def extract_from_book_summary_obj(obj: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    def to_float(v):
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+    mark = obj.get("mark_price") or obj.get("mark") or obj.get("estimated_delivery_price")
+    index = obj.get("estimated_delivery_price") or obj.get("index_price") or obj.get("last")
+    v24h = obj.get("volume_usd") or obj.get("volume") or (obj.get("stats") or {}).get("volume")
+    dvol = (obj.get("dvol") or (obj.get("stats") or {}).get("dvol") or obj.get("daily_volatility"))
+    return {
+        "mark": to_float(mark),
+        "index": to_float(index),
+        "v24h": to_float(v24h),
+        "dvol": to_float(dvol)
+    }
+
+# Obter summary por instrument_name (ticker + book summary) para funding/open_interest/dvol
+def get_instrument_metrics(instrument_name: str) -> Dict[str, Optional[float]]:
+    result = {"funding": None, "open_interest": None, "v24h": None, "dvol": None, "mark_from_ticker": None, "index_from_ticker": None}
     if not instrument_name:
-        return summary
-    # ticker
+        return result
     try:
         ticker = deribit_get("/public/ticker", params={"instrument_name": instrument_name})
         if isinstance(ticker, dict):
-            summary["mark"] = ticker.get("mark_price") or ticker.get("mark") or ticker.get("last")
-            summary["index"] = ticker.get("index_price") or ticker.get("underlying_index")
-            # funding: vários nomes possíveis
-            summary["funding"] = ticker.get("funding_8h") or ticker.get("funding_rate") or ticker.get("current_funding")
+            # tentativas de campos possíveis
+            result["mark_from_ticker"] = ticker.get("mark_price") or ticker.get("mark") or ticker.get("last")
+            result["index_from_ticker"] = ticker.get("index_price") or ticker.get("underlying_index") or ticker.get("last")
+            result["funding"] = ticker.get("funding_8h") or ticker.get("funding_rate") or ticker.get("current_funding") or ticker.get("estimated_funding_rate")
     except Exception as e:
         logger.debug("Erro ticker %s: %s", instrument_name, e)
-    # book summary
     try:
         book = deribit_get("/public/get_book_summary_by_instrument", params={"instrument_name": instrument_name})
-        # book pode ser lista ou dict
         b = None
         if isinstance(book, list) and book:
             b = book[0]
         elif isinstance(book, dict):
             b = book
         if b:
-            summary["open_interest"] = b.get("open_interest") or b.get("oi")
-            # tentar stats.volume
+            result["open_interest"] = b.get("open_interest") or b.get("oi")
             stats = b.get("stats") if isinstance(b.get("stats"), dict) else None
             if stats:
-                summary["v24h"] = stats.get("volume") or stats.get("volume_usd")
-            summary["v24h"] = summary["v24h"] or b.get("volume") or b.get("volume_24h")
-            summary["dvol"] = b.get("dvol") or b.get("daily_volatility") or b.get("dv")
+                result["v24h"] = stats.get("volume") or stats.get("volume_usd")
+            result["v24h"] = result["v24h"] or b.get("volume") or b.get("volume_24h")
+            result["dvol"] = b.get("dvol") or b.get("daily_volatility") or (stats and stats.get("dvol"))
     except Exception as e:
-        logger.debug("Erro book_summary %s: %s", instrument_name, e)
-    # normalizar
+        logger.debug("Erro book_summary_by_instrument %s: %s", instrument_name, e)
+    # normalizar floats
     def to_float(v):
         try:
             return float(v) if v is not None else None
         except Exception:
             return None
-    return {k: to_float(v) for k, v in summary.items()}
+    return {k: to_float(v) for k, v in result.items()}
 
-# Obter candle e calcular wicks (usa instrument_name)
-def get_latest_candle_wicks(instrument_name: str, resolution: str = "1") -> Dict[str, Optional[float]]:
+# Obter candles e calcular wicks (resolução definida como 15)
+CANDLE_RESOLUTION = "15"
+
+def get_latest_candle_wicks(instrument_name: str, resolution: str = CANDLE_RESOLUTION) -> Dict[str, Optional[float]]:
     result = {"upper_wick": None, "lower_wick": None}
     if not instrument_name:
         return result
     now_ms = int(datetime.utcnow().timestamp() * 1000)
-    start_ms = now_ms - (10 * 60 * 1000)  # 10 minutos atrás
+    start_ms = now_ms - (int(resolution) * 60 * 1000 * 2)  # pegar janelas maiores: 2 candles de resolução
     params = {
         "instrument_name": instrument_name,
         "resolution": resolution,
@@ -225,44 +278,53 @@ def get_latest_candle_wicks(instrument_name: str, resolution: str = "1") -> Dict
         logger.debug("Erro candles %s: %s", instrument_name, e)
     return result
 
-# Collect & store
+# Função principal de coleta e persistência
 def collect_and_store():
     timestamp = datetime.utcnow()
 
-    # resolver instrumentos perpétuos
-    btc_instr = resolve_perp_instrument("BTC")
-    eth_instr = resolve_perp_instrument("ETH")
-    logger.info("Resolved instruments: BTC=%s ETH=%s", btc_instr, eth_instr)
+    # pares representativos (escolha do usuário: ambos em USDC)
+    btc_pair = choose_pair_from_currency("BTC", preferred_quote="USDC")
+    eth_pair = choose_pair_from_currency("ETH", preferred_quote="USDC")
 
-    # coletar summaries
-    btc_summary = get_instrument_summary(btc_instr)
-    eth_summary = get_instrument_summary(eth_instr)
+    # extrair mark/index/v24h/dvol a partir do par escolhido
+    btc_from_pair = extract_from_book_summary_obj(btc_pair) if btc_pair else {"mark": None, "index": None, "v24h": None, "dvol": None}
+    eth_from_pair = extract_from_book_summary_obj(eth_pair) if eth_pair else {"mark": None, "index": None, "v24h": None, "dvol": None}
 
-    # coletar wicks
-    btc_wicks = get_latest_candle_wicks(btc_instr, resolution="1")
-    eth_wicks = get_latest_candle_wicks(eth_instr, resolution="1")
+    # resolver perps para funding/oi/candles
+    btc_perp = resolve_perp_instrument("BTC") or "BTC-PERPETUAL"
+    eth_perp = resolve_perp_instrument("ETH") or "ETH-PERPETUAL"
+    logger.info("Perp instruments resolved: BTC=%s ETH=%s", btc_perp, eth_perp)
 
+    # coletar métricas adicionais por perp
+    btc_metrics = get_instrument_metrics(btc_perp)
+    eth_metrics = get_instrument_metrics(eth_perp)
+
+    # coletar wicks com resolução definida
+    btc_wicks = get_latest_candle_wicks(btc_perp)
+    eth_wicks = get_latest_candle_wicks(eth_perp)
+
+    # montar payload (escolhas de prioridade: prefer book_summary_by_currency para mark/index; ticker fallback)
     payload = {
         "timestamp": timestamp,
-        "btc_mark": btc_summary.get("mark"),
-        "btc_index": btc_summary.get("index"),
-        "eth_mark": eth_summary.get("mark"),
-        "eth_index": eth_summary.get("index"),
-        "funding_btc": btc_summary.get("funding"),
-        "funding_eth": eth_summary.get("funding"),
-        "open_interest_btc": btc_summary.get("open_interest"),
-        "open_interest_eth": eth_summary.get("open_interest"),
-        "v24h_btc": btc_summary.get("v24h"),
-        "v24h_eth": eth_summary.get("v24h"),
-        "dvol_btc": btc_summary.get("dvol"),
-        "dvol_eth": eth_summary.get("dvol"),
+        "btc_mark": btc_from_pair.get("mark") or btc_metrics.get("mark_from_ticker"),
+        "btc_index": btc_from_pair.get("index") or btc_metrics.get("index_from_ticker"),
+        "eth_mark": eth_from_pair.get("mark") or eth_metrics.get("mark_from_ticker"),
+        "eth_index": eth_from_pair.get("index") or eth_metrics.get("index_from_ticker"),
+        "funding_btc": btc_metrics.get("funding"),
+        "funding_eth": eth_metrics.get("funding"),
+        "open_interest_btc": btc_metrics.get("open_interest"),
+        "open_interest_eth": eth_metrics.get("open_interest"),
+        "v24h_btc": btc_from_pair.get("v24h") or btc_metrics.get("v24h"),
+        "v24h_eth": eth_from_pair.get("v24h") or eth_metrics.get("v24h"),
+        "dvol_btc": btc_from_pair.get("dvol") or btc_metrics.get("dvol"),
+        "dvol_eth": eth_from_pair.get("dvol") or eth_metrics.get("dvol"),
         "upper_wick_btc": btc_wicks.get("upper_wick"),
         "lower_wick_btc": btc_wicks.get("lower_wick"),
         "upper_wick_eth": eth_wicks.get("upper_wick"),
         "lower_wick_eth": eth_wicks.get("lower_wick")
     }
 
-    logger.info("Payload coletado: %s", {k: v for k, v in payload.items() if k != "timestamp"})
+    logger.info("Payload coletado (excluindo timestamp): %s", {k: v for k, v in payload.items() if k != "timestamp"})
 
     conn = None
     try:
