@@ -8,9 +8,10 @@ import time
 import logging
 import requests
 import psycopg2
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
-from datetime import timezone, timedelta
+from Alimenta_PostGre_Deribit import get_volatility_index
+
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
