@@ -140,6 +140,17 @@ def deribit_get(path: str, params: Optional[Dict[str, Any]] = None, retries: int
                 logger.error("Falha ao acessar Deribit: %s", exc)
                 raise
 
+def get_volatility_index(currency: str) -> Optional[float]:
+    try:
+        data = deribit_get("/public/get_volatility_index_data", params={"currency": currency})
+        if isinstance(data, dict):
+            return float(data.get("current_value") or 0)
+    except Exception as e:
+        logger.debug("Erro ao obter DVOL para %s: %s", currency, e)
+    return None
+
+
+
 # --- Collect ticker/summary per instrument (mark, index, funding, open_interest, volume, dvol)
 def get_instrument_summary(instrument_name: str) -> Dict[str, Optional[float]]:
     # Usaremos endpoint /public/ticker para mark_price e index_price e /public/get_book_summary_by_instrument para open interest/volume possivelmente
