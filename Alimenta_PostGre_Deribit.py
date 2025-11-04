@@ -113,8 +113,10 @@ def get_volatility_index(currency: str) -> Optional[float]:
 
         if isinstance(data, dict) and "data" in data:
             series = data["data"]
+            logger.info("Série DVOL (%s): %s", currency, series)
             if isinstance(series, list) and series:
                 last_point = series[-1]
+                logger.info("Último ponto DVOL (%s): %s", currency, last_point)
                 return float(last_point.get("value") or 0)
     except Exception as e:
         logger.debug("Erro ao obter DVOL para %s: %s", currency, e)
