@@ -103,7 +103,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
             "currency": currency,
             "start_timestamp": two_hours_ago_ms,
             "end_timestamp": now_ms,
-            "resolution": "15"
+            "resolution": "30"
         }
 
         data = deribit_get("/public/get_volatility_index_data", params=params)
