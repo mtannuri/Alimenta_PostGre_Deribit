@@ -250,6 +250,10 @@ def collect_and_store():
     eth_wicks = get_latest_candle_wicks(ETH_INSTR, resolution="1")
     sol_wicks = get_latest_candle_wicks(SOL_INSTR, resolution="1")
 
+    dvol_btc = get_volatility_index("BTC")
+    dvol_eth = get_volatility_index("ETH")
+    logger.info("DVOL BTC: %s | DVOL ETH: %s", dvol_btc, dvol_eth)
+
     payload = {
         "timestamp": timestamp,
         "btc_mark": btc_summary.get("mark"),
@@ -267,16 +271,15 @@ def collect_and_store():
         "v24h_btc": btc_summary.get("v24h"),
         "v24h_eth": eth_summary.get("v24h"),
         "v24h_sol": sol_summary.get("v24h"),
-        "dvol_btc": get_volatility_index("BTC"),
-        "dvol_eth": get_volatility_index("ETH"),
+        "dvol_btc": dvol_btc,
+        "dvol_eth": dvol_eth,
         "upper_wick_btc": btc_wicks.get("upper_wick"),
         "lower_wick_btc": btc_wicks.get("lower_wick"),
         "upper_wick_eth": eth_wicks.get("upper_wick"),
         "lower_wick_eth": eth_wicks.get("lower_wick"),
         "upper_wick_sol": sol_wicks.get("upper_wick"),
         "lower_wick_sol": sol_wicks.get("lower_wick")
-    }
-
+}
     logger.info("Payload coletado: %s", json.dumps({k: v for k, v in payload.items() if k != "timestamp"}, default=str))
 
     conn = None
