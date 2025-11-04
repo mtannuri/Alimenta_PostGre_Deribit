@@ -93,19 +93,24 @@ INSERT INTO {TABLE_NAME} (
     %(upper_wick_sol)s, %(lower_wick_sol)s
 );
 """
+
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
         now_ms = int(time.time() * 1000)
-        one_hour_ago_ms = now_ms - (60 * 60 * 1000)
+        two_hours_ago_ms = now_ms - (2 * 60 * 60 * 1000)
 
         params = {
             "currency": currency,
-            "start_timestamp": one_hour_ago_ms,
+            "start_timestamp": two_hours_ago_ms,
             "end_timestamp": now_ms,
-            "resolution": "1"
+            "resolution": "15"
         }
 
         data = deribit_get("/public/get_volatility_index_data", params=params)
+
+        # 🔍 Log da resposta bruta
+        logger.info("Resposta bruta da API DVOL (%s): %s", currency, data)
+
         if isinstance(data, dict) and "data" in data:
             series = data["data"]
             if isinstance(series, list) and series:
@@ -114,6 +119,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
     except Exception as e:
         logger.debug("Erro ao obter DVOL para %s: %s", currency, e)
     return None
+
 
 
 
