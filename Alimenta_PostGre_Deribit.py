@@ -265,7 +265,8 @@ def collect_and_store():
 
     dvol_btc = get_volatility_index("BTC")
     dvol_eth = get_volatility_index("ETH")
-    logger.info("DVOL BTC: %s | DVOL ETH: %s", dvol_btc, dvol_eth)
+    logger.info("DVOL BTC retornado: %s", dvol_btc)
+    logger.info("DVOL ETH retornado: %s", dvol_eth)
 
     payload = {
         "timestamp": timestamp,
