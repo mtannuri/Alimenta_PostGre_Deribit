@@ -98,34 +98,31 @@ INSERT INTO {TABLE_NAME} (
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
         now_ms = int(time.time() * 1000)
-        two_hours_ago_ms = now_ms - (2 * 60 * 60 * 1000)
+        two_days_ago_ms = now_ms - (2 * 24 * 60 * 60 * 1000)  # 2 dias atrás
 
         params = {
             "currency": currency,
-            "start_timestamp": two_hours_ago_ms,
+            "start_timestamp": two_days_ago_ms,
             "end_timestamp": now_ms,
-            "resolution": "30"
+            "resolution": "360"  # 6 horas
         }
 
         data = deribit_get("/public/get_volatility_index_data", params=params)
-
-        # 🔍 Log completo para depuração
-        logger.info("DVOL - Parâmetros usados (%s): %s", currency, params)
         logger.info("DVOL - Resposta bruta (%s): %s", currency, data)
 
         if isinstance(data, dict) and "data" in data:
             series = data["data"]
-            logger.info("DVOL - Série (%s): %s", currency, series)
             if isinstance(series, list) and series:
                 last_point = series[-1]
-                logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
-                return float(last_point.get("value") or 0)
+                # Extrai o valor de fechamento (índice 4)
+                return float(last_point[4])
+            else:
+                logger.warning("DVOL - Nenhum dado retornado para %s", currency)
         else:
-            logger.warning("DVOL - Resposta inesperada (%s): %s", currency, data)
+            logger.warning("DVOL - Resposta inesperada para %s: %s", currency, data)
     except Exception as e:
         logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
-
 
 
 
