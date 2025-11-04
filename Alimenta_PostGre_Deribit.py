@@ -91,12 +91,24 @@ INSERT INTO {TABLE_NAME} (
     %(upper_wick_sol)s, %(lower_wick_sol)s
 );
 """
-
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
-        data = deribit_get("/public/get_volatility_index_data", params={"currency": currency})
-        if isinstance(data, dict):
-            return float(data.get("current_value") or 0)
+        now_ms = int(time.time() * 1000)
+        one_hour_ago_ms = now_ms - (60 * 60 * 1000)
+
+        params = {
+            "currency": currency,
+            "start_timestamp": one_hour_ago_ms,
+            "end_timestamp": now_ms,
+            "resolution": "1"
+        }
+
+        data = deribit_get("/public/get_volatility_index_data", params=params)
+        if isinstance(data, dict) and "data" in data:
+            series = data["data"]
+            if isinstance(series, list) and series:
+                last_point = series[-1]
+                return float(last_point.get("value") or 0)
     except Exception as e:
         logger.debug("Erro ao obter DVOL para %s: %s", currency, e)
     return None
