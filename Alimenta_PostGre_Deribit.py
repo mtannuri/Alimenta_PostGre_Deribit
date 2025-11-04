@@ -94,6 +94,9 @@ INSERT INTO {TABLE_NAME} (
 );
 """
 
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
         now = datetime.now(timezone.utc)
@@ -113,6 +116,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
         data = deribit_get("/public/get_volatility_index_data", params=params)
         logger.info("DVOL - Resposta bruta (%s): %s", currency, data)
 
+        # Correção: acessar data dentro de result
         if isinstance(data, dict) and "result" in data and "data" in data["result"]:
             series = data["result"]["data"]
             if isinstance(series, list) and series:
@@ -126,6 +130,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
     except Exception as e:
         logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
+    
 
 
 
