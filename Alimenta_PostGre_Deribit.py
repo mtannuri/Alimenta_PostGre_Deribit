@@ -94,9 +94,6 @@ INSERT INTO {TABLE_NAME} (
 );
 """
 
-
-from datetime import datetime, timedelta, timezone
-
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
         now = datetime.now(timezone.utc)
@@ -116,8 +113,8 @@ def get_volatility_index(currency: str) -> Optional[float]:
         data = deribit_get("/public/get_volatility_index_data", params=params)
         logger.info("DVOL - Resposta bruta (%s): %s", currency, data)
 
-        if isinstance(data, dict) and "data" in data:
-            series = data["data"]
+        if isinstance(data, dict) and "result" in data and "data" in data["result"]:
+            series = data["result"]["data"]
             if isinstance(series, list) and series:
                 last_point = series[-1]
                 logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
@@ -129,6 +126,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
     except Exception as e:
         logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
+
 
 
 # --- DB helpers
