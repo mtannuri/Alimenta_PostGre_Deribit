@@ -96,42 +96,32 @@ INSERT INTO {TABLE_NAME} (
 
 
 
-def get_volatility_index(currency: str) -> Optional[float]:
+def get_volatility_index(currency: str) -> float:
+    now = datetime.now(timezone.utc)
+    end = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = end - timedelta(days=3)
+
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+
+    params = {
+        "currency": currency,
+        "start_timestamp": start_ms,
+        "end_timestamp": end_ms,
+        "resolution": "1D"
+    }
+
+    url = "https://www.deribit.com/api/v2/public/get_volatility_index_data"
     try:
-        now = datetime.now(timezone.utc)
-        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start = end - timedelta(days=3)
-
-        start_ms = int(start.timestamp() * 1000)
-        end_ms = int(end.timestamp() * 1000)
-
-        params = {
-            "currency": currency,
-            "start_timestamp": start_ms,
-            "end_timestamp": end_ms,
-            "resolution": "1D"
-        }
-
-        data = deribit_get("/public/get_volatility_index_data", params=params)
-        logger.info("DVOL - Resposta bruta (%s): %s", currency, data)
-
-        # Detecta se 'data' está no topo ou dentro de 'result'
-        series = None
-        if isinstance(data, dict):
-            if "result" in data and isinstance(data["result"], dict) and "data" in data["result"]:
-                series = data["result"]["data"]
-            elif "data" in data:
-                series = data["data"]
-
-        if isinstance(series, list) and series:
+        response = requests.get(url, params=params)
+        data = response.json()
+        series = data["result"]["data"]
+        if series:
             last_point = series[-1]
-            logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
             return float(last_point[4])
-        else:
-            logger.warning("DVOL - Nenhum dado retornado para %s", currency)
     except Exception as e:
-        logger.exception("DVOL - Erro ao obter dados para %s", currency)
-    return None
+        print(f"Erro ao obter DVOL para {currency}: {e}")
+    return 0.0
     
 
 
