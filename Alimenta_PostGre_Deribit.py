@@ -94,8 +94,7 @@ INSERT INTO {TABLE_NAME} (
 );
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+
 
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
@@ -116,17 +115,20 @@ def get_volatility_index(currency: str) -> Optional[float]:
         data = deribit_get("/public/get_volatility_index_data", params=params)
         logger.info("DVOL - Resposta bruta (%s): %s", currency, data)
 
-        # Correção: acessar data dentro de result
-        if isinstance(data, dict) and "result" in data and "data" in data["result"]:
-            series = data["result"]["data"]
-            if isinstance(series, list) and series:
-                last_point = series[-1]
-                logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
-                return float(last_point[4])
-            else:
-                logger.warning("DVOL - Nenhum dado retornado para %s", currency)
+        # Detecta se 'data' está no topo ou dentro de 'result'
+        series = None
+        if isinstance(data, dict):
+            if "result" in data and isinstance(data["result"], dict) and "data" in data["result"]:
+                series = data["result"]["data"]
+            elif "data" in data:
+                series = data["data"]
+
+        if isinstance(series, list) and series:
+            last_point = series[-1]
+            logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
+            return float(last_point[4])
         else:
-            logger.warning("DVOL - Resposta inesperada para %s: %s", currency, data)
+            logger.warning("DVOL - Nenhum dado retornado para %s", currency)
     except Exception as e:
         logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
