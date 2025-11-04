@@ -95,16 +95,21 @@ INSERT INTO {TABLE_NAME} (
 """
 
 
+
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
-        now_ms = int(time.time() * 1000)
-        two_days_ago_ms = now_ms - (2 * 24 * 60 * 60 * 1000)
+        now = datetime.now(timezone.utc)
+        end = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = end - timedelta(days=3)
+
+        start_ms = int(start.timestamp() * 1000)
+        end_ms = int(end.timestamp() * 1000)
 
         params = {
             "currency": currency,
-            "start_timestamp": two_days_ago_ms,
-            "end_timestamp": now_ms,
-            "resolution": "360"
+            "start_timestamp": start_ms,
+            "end_timestamp": end_ms,
+            "resolution": "1D"
         }
 
         data = deribit_get("/public/get_volatility_index_data", params=params)
@@ -115,7 +120,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
             if isinstance(series, list) and series:
                 last_point = series[-1]
                 logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
-                return float(last_point[4])  # valor de fechamento
+                return float(last_point[4])
             else:
                 logger.warning("DVOL - Nenhum dado retornado para %s", currency)
         else:
@@ -123,6 +128,7 @@ def get_volatility_index(currency: str) -> Optional[float]:
     except Exception as e:
         logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
+
 
 
 # --- DB helpers
