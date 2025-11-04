@@ -94,6 +94,7 @@ INSERT INTO {TABLE_NAME} (
 );
 """
 
+
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
         now_ms = int(time.time() * 1000)
@@ -108,18 +109,21 @@ def get_volatility_index(currency: str) -> Optional[float]:
 
         data = deribit_get("/public/get_volatility_index_data", params=params)
 
-        # 🔍 Log da resposta bruta
-        logger.info("Resposta bruta da API DVOL (%s): %s", currency, data)
+        # 🔍 Log completo para depuração
+        logger.info("DVOL - Parâmetros usados (%s): %s", currency, params)
+        logger.info("DVOL - Resposta bruta (%s): %s", currency, data)
 
         if isinstance(data, dict) and "data" in data:
             series = data["data"]
-            logger.info("Série DVOL (%s): %s", currency, series)
+            logger.info("DVOL - Série (%s): %s", currency, series)
             if isinstance(series, list) and series:
                 last_point = series[-1]
-                logger.info("Último ponto DVOL (%s): %s", currency, last_point)
+                logger.info("DVOL - Último ponto (%s): %s", currency, last_point)
                 return float(last_point.get("value") or 0)
+        else:
+            logger.warning("DVOL - Resposta inesperada (%s): %s", currency, data)
     except Exception as e:
-        logger.debug("Erro ao obter DVOL para %s: %s", currency, e)
+        logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
 
 
