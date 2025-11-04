@@ -11,6 +11,8 @@ import psycopg2
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 
+CANDLE_RESOLUTION = "1"
+
 # --- Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 logger = logging.getLogger("Alimenta_PostGre_Deribit")
