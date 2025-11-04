@@ -8,7 +8,7 @@ import json
 import logging
 import requests
 import psycopg2
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
 CANDLE_RESOLUTION = "1"
@@ -95,6 +95,7 @@ INSERT INTO {TABLE_NAME} (
 """
 
 
+from datetime import datetime, timedelta, timezone
 
 def get_volatility_index(currency: str) -> Optional[float]:
     try:
@@ -128,7 +129,6 @@ def get_volatility_index(currency: str) -> Optional[float]:
     except Exception as e:
         logger.exception("DVOL - Erro ao obter dados para %s", currency)
     return None
-
 
 
 # --- DB helpers
