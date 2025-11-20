@@ -2,7 +2,7 @@
 
 import os
 import logging
-from dotenv import load_dotenv
+#from dotenv import load_dotenv - para rodar localmente
 from organizador import (
     adicionar_spot,
     adicionar_dvol,
@@ -30,7 +30,7 @@ from acessa_deribit import (
 
 
 # Carrega variáveis de ambiente
-load_dotenv()
+#load_dotenv() - para rodar localmente
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
