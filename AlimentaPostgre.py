@@ -30,6 +30,9 @@ def montar_linha_para_insercao():
         conn = psycopg2.connect(os.getenv("DB_URL"))
         cur = conn.cursor()
 
+        cur.execute("SELECT current_database(), current_schema();") #duas linhas adicionadas para rodar no render
+        print("Conectado em:", cur.fetchone())
+
         for moeda in ["BTC", "ETH"]:
             spot = next((d for d in reversed(dados_spot) if d.get("instrument_name") == f"{moeda}_USDC"), {})
             row[f"{moeda}_USDC_spot"] = spot.get("mark_price")
@@ -122,6 +125,10 @@ def inserir_linha_no_banco(row):
 
         
         cur = conn.cursor()
+        cur.execute("SELECT current_database(), current_schema();") #2 linhas adicionadas para rodar no render
+        print("Conectado em:", cur.fetchone())
+
+
         cur.execute(query, valores)
         conn.commit()
         cur.close()
