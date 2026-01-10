@@ -19,6 +19,7 @@ from organizador import (
     adicionar_imbalance,
     obter_dataframe_imbalance
 )
+
 from acessa_deribit import (
     get_spot_price_deribit,
     get_dvol_live,
