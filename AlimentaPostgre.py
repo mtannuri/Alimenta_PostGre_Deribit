@@ -20,17 +20,10 @@ def montar_linha_para_insercao():
     row = {"Datetime": datetime.utcnow()}
 
     try:
-        #conn = psycopg2.connect(      para rodar local
-        #    dbname=os.getenv("DB_NAME"),
-        #    user=os.getenv("DB_USER"),
-        #    password=os.getenv("DB_PASSWORD"),
-        #    host=os.getenv("DB_HOST"),
-        #    port=os.getenv("DB_PORT")
-        #)
         conn = psycopg2.connect(os.getenv("DB_URL"))
         cur = conn.cursor()
 
-        cur.execute("SELECT current_database(), current_schema();") #duas linhas adicionadas para rodar no render
+        cur.execute("SELECT current_database(), current_schema();")
         print("Conectado em:", cur.fetchone())
 
         for moeda in ["BTC", "ETH"]:
@@ -49,8 +42,7 @@ def montar_linha_para_insercao():
             row[f"{moeda}_PERPETUAL_volume_24h_notional"] = perp.get("volume_notional")
 
             candle = next((d for d in reversed(dados_candle_15m) if d.get("moeda", "").upper() == moeda), {})
-            volume_atual = candle.get("volume")
-            row[f"{moeda}_volume_candle"] = volume_atual
+            row[f"{moeda}_volume_candle"] = candle.get("volume")
             row[f"{moeda}_open_candle"] = candle.get("open")
             row[f"{moeda}_high_candle"] = candle.get("high")
             row[f"{moeda}_low_candle"] = candle.get("low")
@@ -61,44 +53,13 @@ def montar_linha_para_insercao():
             row[f"{moeda}_volume_asks"] = imb.get("volume_asks")
             row[f"{moeda}_Imbalance"] = imb.get("imbalance")
 
-            # Médias móveis de volume (incluindo o volume atual)
-            cur.execute(f"""
-                SELECT {moeda}_volume_candle
-                FROM deribit_15m
-                WHERE {moeda}_volume_candle IS NOT NULL
-                ORDER BY Datetime DESC
-                LIMIT 15
-            """)
-            volumes_anteriores = [v[0] for v in cur.fetchall()]
-            volumes = [float(volume_atual)] + [float(v) for v in volumes_anteriores]
-            row[f"{moeda}_volume_3_p"] = round(sum(volumes[:3]) / 3, 2) if len(volumes) >= 3 else None
-            row[f"{moeda}_volume_8_p"] = round(sum(volumes[:8]) / 8, 2) if len(volumes) >= 8 else None
-            row[f"{moeda}_volume_16_p"] = round(sum(volumes[:16]) / 16, 2) if len(volumes) >= 16 else None
-
-            # Deltas de open interest (atual - valor de N períodos atrás)
-            atual = row[f"{moeda}_open_interest"]
-            cur.execute(f"""
-                SELECT {moeda}_open_interest
-                FROM deribit_15m
-                WHERE {moeda}_open_interest IS NOT NULL
-                ORDER BY Datetime DESC
-                LIMIT 16
-            """)
-            historico = [v[0] for v in cur.fetchall()]
-            for p in [1, 2, 3, 4, 8, 16]:
-                delta = atual - historico[p - 1] if len(historico) >= p else None
-                row[f"{moeda}_delta_open_interest_{p}p"] = round(delta, 2) if delta is not None else None
-
         cur.close()
         conn.close()
 
     except Exception as e:
-        print(f"❌ Erro ao calcular campos derivados: {e}")
+        print(f"❌ Erro ao montar linha: {e}")
 
     return row
-
-
-
 
 
 def inserir_linha_no_banco(row):
@@ -108,59 +69,48 @@ def inserir_linha_no_banco(row):
     placeholders = ', '.join(['%s'] * len(colunas))
     nomes_colunas = ', '.join(colunas)
 
-    # Mantém a query original para deribit_15m (não removida)
+    # Query para tabela principal
     query = f"""
-        INSERT INTO deribit_15m ({nomes_colunas})
+        INSERT INTO tbGeralDeribit ({nomes_colunas})
         VALUES ({placeholders})
     """
 
-    # Nova query mínima para inserir na tabela temporária
+    # Query para tabela temporária
     query_temp = f"""
-        INSERT INTO deribit_15m_temp ({nomes_colunas})
+        INSERT INTO tbGeralDeribit_temp ({nomes_colunas})
         VALUES ({placeholders})
     """
 
     try:
-        #conn = psycopg2.connect( para rodar local
-        #    dbname=os.getenv("DB_NAME"),
-        #    user=os.getenv("DB_USER"),
-        #    password=os.getenv("DB_PASSWORD"),
-        #    host=os.getenv("DB_HOST"),
-        #    port=os.getenv("DB_PORT")
-        #)
-
         conn = psycopg2.connect(os.getenv("DB_URL"))
-
-        
         cur = conn.cursor()
-        cur.execute("SELECT current_database(), current_schema();") #2 linhas adicionadas para rodar no render
+
+        cur.execute("SELECT current_database(), current_schema();")
         print("Conectado em:", cur.fetchone())
 
         # 1) Sempre insere na tabela temporária
         cur.execute(query_temp, valores)
 
-        # 2) Calcula: (count_temp - 31)
-        cur.execute("SELECT COUNT(*) FROM deribit_15m_temp;")
+        # 2) Conta registros na temp
+        cur.execute("SELECT COUNT(*) FROM tbGeralDeribit_temp;")
         count_temp = cur.fetchone()[0]
         delta = count_temp - 31
-        print(f"Registros em deribit_15m_temp: {count_temp} | delta = {delta}")
+        print(f"Registros em tbGeralDeribit_temp: {count_temp} | delta = {delta}")
 
-        # 3) Se delta >= 46: apaga 15 mais antigas e insere na tabela principal
+        # 3) Se delta >= 46: apaga 15 mais antigas e insere na principal
         if delta >= 46:
-            # Apagar as 15 linhas mais antigas (assumindo coluna 'id' crescente)
             cur.execute("""
-                DELETE FROM deribit_15m_temp
+                DELETE FROM tbGeralDeribit_temp
                 WHERE id IN (
-                    SELECT id FROM deribit_15m_temp
+                    SELECT id FROM tbGeralDeribit_temp
                     ORDER BY id ASC
                     LIMIT 15
                 )
             """)
-            print("🧹 Removidas as 15 linhas mais antigas de deribit_15m_temp.")
+            print("🧹 Removidas as 15 linhas mais antigas de tbGeralDeribit_temp.")
 
-            # Inserção na tabela principal (mantendo a query original)
             cur.execute(query, valores)
-            print("📦 Inserção realizada em deribit_15m.")
+            print("📦 Inserção realizada em tbGeralDeribit.")
 
         conn.commit()
         cur.close()
