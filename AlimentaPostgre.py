@@ -100,6 +100,7 @@ def montar_linha_para_insercao():
 
 
 
+
 def inserir_linha_no_banco(row):
     colunas = list(row.keys())
     valores = [row[col] for col in colunas]
@@ -107,8 +108,15 @@ def inserir_linha_no_banco(row):
     placeholders = ', '.join(['%s'] * len(colunas))
     nomes_colunas = ', '.join(colunas)
 
+    # Mantém a query original para deribit_15m (não removida)
     query = f"""
         INSERT INTO deribit_15m ({nomes_colunas})
+        VALUES ({placeholders})
+    """
+
+    # Nova query mínima para inserir na tabela temporária
+    query_temp = f"""
+        INSERT INTO deribit_15m_temp ({nomes_colunas})
         VALUES ({placeholders})
     """
 
@@ -128,11 +136,35 @@ def inserir_linha_no_banco(row):
         cur.execute("SELECT current_database(), current_schema();") #2 linhas adicionadas para rodar no render
         print("Conectado em:", cur.fetchone())
 
+        # 1) Sempre insere na tabela temporária
+        cur.execute(query_temp, valores)
 
-        cur.execute(query, valores)
+        # 2) Calcula: (count_temp - 31)
+        cur.execute("SELECT COUNT(*) FROM deribit_15m_temp;")
+        count_temp = cur.fetchone()[0]
+        delta = count_temp - 31
+        print(f"Registros em deribit_15m_temp: {count_temp} | delta = {delta}")
+
+        # 3) Se delta >= 46: apaga 15 mais antigas e insere na tabela principal
+        if delta >= 46:
+            # Apagar as 15 linhas mais antigas (assumindo coluna 'id' crescente)
+            cur.execute("""
+                DELETE FROM deribit_15m_temp
+                WHERE id IN (
+                    SELECT id FROM deribit_15m_temp
+                    ORDER BY id ASC
+                    LIMIT 15
+                )
+            """)
+            print("🧹 Removidas as 15 linhas mais antigas de deribit_15m_temp.")
+
+            # Inserção na tabela principal (mantendo a query original)
+            cur.execute(query, valores)
+            print("📦 Inserção realizada em deribit_15m.")
+
         conn.commit()
         cur.close()
         conn.close()
-        print("✅ Linha inserida com sucesso no banco de dados.")
+        print("✅ Operação concluída com sucesso.")
     except Exception as e:
         print(f"❌ Erro ao inserir no banco: {e}")
