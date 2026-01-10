@@ -1,5 +1,3 @@
-# organizador.py
-
 from typing import Dict, List
 import pandas as pd
 
@@ -7,6 +5,7 @@ import pandas as pd
 dados_spot: List[Dict] = []
 dados_dvol: List[Dict] = []
 dados_resumo_perpetuo: List[Dict] = []
+dados_futuro: List[Dict] = []  # <-- adicionado
 
 def adicionar_spot(dado: Dict):
     """Adiciona um registro de preço spot à lista."""
@@ -27,7 +26,7 @@ def adicionar_resumo_candle_15m(dado: Dict):
     dados_candle_15m.append(dado)
     
 # Lista para armazenar os dados de imbalance
-dados_imbalance = []
+dados_imbalance: List[Dict] = []
 
 def adicionar_imbalance(dado: dict):
     print(f"🟢 Salvando imbalance: {dado}")
@@ -53,10 +52,8 @@ def obter_dataframe_resumo_candle_15m() -> pd.DataFrame:
     """Retorna os dados de candle de 15 minutos como DataFrame."""
     return pd.DataFrame(dados_candle_15m)
 
-def obter_dataframe_imbalance():
+def obter_dataframe_imbalance() -> pd.DataFrame:
     return pd.DataFrame(dados_imbalance)
-
-
 
 def limpar():
     """Limpa todos os dados armazenados."""
@@ -65,4 +62,4 @@ def limpar():
     dados_futuro.clear()
     dados_resumo_perpetuo.clear()
     dados_candle_15m.clear()
-    
+    dados_imbalance.clear()
